@@ -124,10 +124,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.7 - fixed iSCSI to return all portals
         1.8 - added revert to snapshot
         1.9 - added manage/unmanage/manageable-list volume/snapshot
+        1.10 - added support for TLS/SSL communication
 
     """
 
-    VERSION = '1.9'
+    VERSION = '1.10'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "INFINIDAT_CI"
@@ -141,8 +142,10 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
     def get_driver_options():
         return infinidat_opts
 
-    def _setup_and_get_system_object(self, management_address, auth):
-        system = infinisdk.InfiniBox(management_address, auth=auth)
+    def _setup_and_get_system_object(self, management_address, auth,
+                                     use_ssl=False):
+        system = infinisdk.InfiniBox(management_address, auth=auth,
+                                     use_ssl=use_ssl)
         system.api.add_auto_retry(
             lambda e: isinstance(
                 e, infinisdk.core.exceptions.APITransportFailure) and
@@ -159,9 +162,10 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             raise exception.VolumeDriverException(message=msg)
         auth = (self.configuration.san_login,
                 self.configuration.san_password)
+        use_ssl = self.configuration.driver_use_ssl
         self.management_address = self.configuration.san_ip
-        self._system = (
-            self._setup_and_get_system_object(self.management_address, auth))
+        self._system = self._setup_and_get_system_object(
+            self.management_address, auth, use_ssl=use_ssl)
         backend_name = self.configuration.safe_get('volume_backend_name')
         self._backend_name = backend_name or self.__class__.__name__
         self._volume_stats = None
