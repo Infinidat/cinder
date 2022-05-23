@@ -14,12 +14,12 @@
 #    under the License.
 """INFINIDAT InfiniBox Volume Driver."""
 
+import collections
 from contextlib import contextmanager
 import functools
 import math
 import platform
 import socket
-from unittest import mock
 import uuid
 
 from oslo_config import cfg
@@ -129,10 +129,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.12 - fixed volume multi-attach
         1.13 - fixed consistency groups feature
         1.14 - added storage assisted volume migration
+        1.15 - fixed backup for attached volume
 
     """
 
-    VERSION = '1.14'
+    VERSION = '1.15'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "INFINIDAT_CI"
@@ -389,8 +390,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                    port.get_state() == 'OK'):
                     yield str(port.get_wwpn())
 
-    def _initialize_connection_fc(self, volume, connector):
-        infinidat_volume = self._get_infinidat_volume(volume)
+    def _initialize_connection_fc(self, infinidat_volume, connector):
         ports = [wwn.WWN(wwpn) for wwpn in connector['wwpns']]
         for port in ports:
             infinidat_host = self._get_or_create_host(port)
@@ -430,8 +430,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                netspace.get_name())
         raise exception.VolumeDriverException(message=msg)
 
-    def _initialize_connection_iscsi(self, volume, connector):
-        infinidat_volume = self._get_infinidat_volume(volume)
+    def _initialize_connection_iscsi(self, infinidat_volume, connector):
         port = iqn.IQN(connector['initiator'])
         infinidat_host = self._get_or_create_host(port)
         if self.configuration.use_chap_auth:
@@ -518,22 +517,40 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                 return True
         return False
 
-    @infinisdk_to_cinder_exceptions
+    def create_export_snapshot(self, context, snapshot, connector):
+        """Exports the snapshot."""
+        pass
+
+    def remove_export_snapshot(self, context, snapshot):
+        """Removes an export for a snapshot."""
+        pass
+
+    def backup_use_temp_snapshot(self):
+        """Use a temporary snapshot for performing non-disruptive backups."""
+        return True
+
     @coordination.synchronized('infinidat-{self.management_address}-lock')
-    def initialize_connection(self, volume, connector):
-        """Map an InfiniBox volume to the host"""
+    def _initialize_connection(self, infinidat_volume, connector):
         if self._protocol == 'FC':
-            return self._initialize_connection_fc(volume, connector)
+            initialize_connection = self._initialize_connection_fc
         else:
-            return self._initialize_connection_iscsi(volume, connector)
+            initialize_connection = self._initialize_connection_iscsi
+        return initialize_connection(infinidat_volume, connector)
 
     @infinisdk_to_cinder_exceptions
-    @coordination.synchronized('infinidat-{self.management_address}-lock')
-    def terminate_connection(self, volume, connector, **kwargs):
-        """Unmap an InfiniBox volume from the host"""
-        if self._is_volume_multiattached(volume, connector):
-            return True
+    def initialize_connection(self, volume, connector, **kwargs):
+        """Map an InfiniBox volume to the host"""
         infinidat_volume = self._get_infinidat_volume(volume)
+        return self._initialize_connection(infinidat_volume, connector)
+
+    @infinisdk_to_cinder_exceptions
+    def initialize_connection_snapshot(self, snapshot, connector, **kwargs):
+        """Map an InfiniBox snapshot to the host"""
+        infinidat_snapshot = self._get_infinidat_snapshot(snapshot)
+        return self._initialize_connection(infinidat_snapshot, connector)
+
+    @coordination.synchronized('infinidat-{self.management_address}-lock')
+    def _terminate_connection(self, infinidat_volume, connector):
         if self._protocol == 'FC':
             volume_type = 'fibre_channel'
         else:
@@ -567,7 +584,21 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             conn_info = dict(driver_volume_type=volume_type,
                              data=result_data)
             fczm_utils.remove_fc_zone(conn_info)
+
+    @infinisdk_to_cinder_exceptions
+    def terminate_connection(self, volume, connector, **kwargs):
+        """Unmap an InfiniBox volume from the host"""
+        if self._is_volume_multiattached(volume, connector):
+            return True
+        infinidat_volume = self._get_infinidat_volume(volume)
+        self._terminate_connection(infinidat_volume, connector)
         return volume.volume_attachment and len(volume.volume_attachment) > 1
+
+    @infinisdk_to_cinder_exceptions
+    def terminate_connection_snapshot(self, snapshot, connector, **kwargs):
+        """Unmap an InfiniBox snapshot from the host"""
+        infinidat_snapshot = self._get_infinidat_snapshot(snapshot)
+        self._terminate_connection(infinidat_snapshot, connector)
 
     @infinisdk_to_cinder_exceptions
     def get_volume_stats(self, refresh=False):
@@ -659,16 +690,16 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         self._set_cinder_object_metadata(infinidat_snapshot, snapshot)
 
     @contextmanager
-    def _connection_context(self, volume):
+    def _connection_context(self, infinidat_volume):
         use_multipath = self.configuration.use_multipath_for_image_xfer
         enforce_multipath = self.configuration.enforce_multipath_for_image_xfer
         connector = utils.brick_get_connector_properties(use_multipath,
                                                          enforce_multipath)
-        connection = self.initialize_connection(volume, connector)
+        connection = self._initialize_connection(infinidat_volume, connector)
         try:
             yield connection
         finally:
-            self.terminate_connection(volume, connector)
+            self._terminate_connection(infinidat_volume, connector)
 
     @contextmanager
     def _attach_context(self, connection):
@@ -693,8 +724,8 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                                             attach_info['device'])
 
     @contextmanager
-    def _device_connect_context(self, volume):
-        with self._connection_context(volume) as connection:
+    def _device_connect_context(self, infinidat_volume):
+        with self._connection_context(infinidat_volume) as connection:
             with self._attach_context(connection) as attach_info:
                 yield attach_info
 
@@ -705,36 +736,25 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         InfiniBox does not yet support detached clone so use dd to copy data.
         This could be a lengthy operation.
 
-        - create a clone from snapshot and map it
-        - create a volume and map it
-        - copy data from clone to volume
-        - unmap volume and clone and delete the clone
+        - create destination volume
+        - map source snapshot and destination volume
+        - copy data from snapshot to volume
+        - unmap volume and clone
         """
         infinidat_snapshot = self._get_infinidat_snapshot(snapshot)
-        clone_name = self._make_volume_name(volume) + '-internal'
-        infinidat_clone = infinidat_snapshot.create_snapshot(name=clone_name)
-        # we need a cinder-volume-like object to map the clone by name
-        # (which is derived from the cinder id) but the clone is internal
-        # so there is no such object. mock one
-        clone = mock.Mock(name_id=str(volume.name_id) + '-internal',
-                          multiattach=False, volume_attachment=[])
+        infinidat_volume = self._create_volume(volume)
         try:
-            infinidat_volume = self._create_volume(volume)
-            try:
-                src_ctx = self._device_connect_context(clone)
-                dst_ctx = self._device_connect_context(volume)
-                with src_ctx as src_dev, dst_ctx as dst_dev:
-                    dd_block_size = self.configuration.volume_dd_blocksize
-                    volume_utils.copy_volume(src_dev['device']['path'],
-                                             dst_dev['device']['path'],
-                                             snapshot.volume.size * units.Ki,
-                                             dd_block_size,
-                                             sparse=True)
-            except Exception:
-                infinidat_volume.delete()
-                raise
-        finally:
-            infinidat_clone.delete()
+            src_ctx = self._device_connect_context(infinidat_snapshot)
+            dst_ctx = self._device_connect_context(infinidat_volume)
+            with src_ctx as src_dev, dst_ctx as dst_dev:
+                dd_block_size = self.configuration.volume_dd_blocksize
+                volume_utils.copy_volume(src_dev['device']['path'],
+                                         dst_dev['device']['path'],
+                                         snapshot.volume.size * units.Ki,
+                                         dd_block_size, sparse=True)
+        except Exception:
+            infinidat_volume.delete()
+            raise
 
     @infinisdk_to_cinder_exceptions
     def delete_snapshot(self, snapshot):
@@ -745,20 +765,6 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             return
         snapshot.safe_delete()
 
-    def _asssert_volume_not_mapped(self, volume):
-        # copy is not atomic so we can't clone while the volume is mapped
-        infinidat_volume = self._get_infinidat_volume(volume)
-        if len(infinidat_volume.get_logical_units()) == 0:
-            return
-
-        # volume has mappings
-        msg = _("INFINIDAT Cinder driver does not support clone of an "
-                "attached volume. "
-                "To get this done, create a snapshot from the attached "
-                "volume and then create a volume from the snapshot.")
-        LOG.error(msg)
-        raise exception.VolumeBackendAPIException(data=msg)
-
     @infinisdk_to_cinder_exceptions
     def create_cloned_volume(self, volume, src_vref):
         """Create a clone from source volume.
@@ -766,26 +772,22 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         InfiniBox does not yet support detached clone so use dd to copy data.
         This could be a lengthy operation.
 
-        * map source volume
+        * create temporary snapshot from source volume
+        * map temporary snapshot
         * create and map new volume
-        * copy data from source to new volume
-        * unmap both volumes
+        * copy data from temporary snapshot to new volume
+        * unmap volume and temporary snapshot
+        * delete temporary snapshot
         """
-        self._asssert_volume_not_mapped(src_vref)
-        infinidat_volume = self._create_volume(volume)
-        try:
-            src_ctx = self._device_connect_context(src_vref)
-            dst_ctx = self._device_connect_context(volume)
-            with src_ctx as src_dev, dst_ctx as dst_dev:
-                dd_block_size = self.configuration.volume_dd_blocksize
-                volume_utils.copy_volume(src_dev['device']['path'],
-                                         dst_dev['device']['path'],
-                                         src_vref.size * units.Ki,
-                                         dd_block_size,
-                                         sparse=True)
-        except Exception:
-            infinidat_volume.delete()
-            raise
+        attributes = ('id', 'name', 'volume')
+        Snapshot = collections.namedtuple('Snapshot', attributes)
+        snapshot_id = str(uuid.uuid4())
+        snapshot_name = CONF.snapshot_name_template % snapshot_id
+        snapshot = Snapshot(id=snapshot_id, name=snapshot_name,
+                            volume=src_vref)
+        self.create_snapshot(snapshot)
+        self.create_volume_from_snapshot(volume, snapshot)
+        self.delete_snapshot(snapshot)
 
     def _build_initiator_target_map(self, connector, all_target_wwns):
         """Build the target_wwns and the initiator target map."""
