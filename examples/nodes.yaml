@@ -1,0 +1,33 @@
+# This is an example.
+# You need to pass real values to get it working
+nodes:
+  - name: "rhosp-ctl01"
+    arch: "x86_64"
+    capabilities: "boot_mode:uefi,profile:control"
+    pm_type: "pxe_ipmitool"
+    pm_user: "censored"
+    pm_password: "censored"
+    pm_addr: "192.168.255.1"
+    # MAC address of the server's PXE interface
+    ports:
+    - address: de:ad:be:ef:00:01
+  - name: "rhosp-cmp01"
+    arch: "x86_64"
+    capabilities: "boot_mode:uefi,profile:compute"
+    pm_type: "pxe_ipmitool"
+    pm_user: "censored"
+    pm_password: "censored"
+    pm_addr: "192.168.255.2"
+    # MAC address of the server's PXE interface
+    ports:
+    - address: de:ad:be:ef:00:02
+  - name: "rhosp-cmp02"
+    arch: "x86_64"
+    capabilities: "boot_mode:uefi,profile:compute"
+    pm_type: "pxe_ipmitool"
+    pm_user: "censored"
+    pm_password: "censored"
+    pm_addr: "192.168.255.3"
+    # MAC address of the server's PXE interface
+    ports:
+    - address: de:ad:be:ef:00:03

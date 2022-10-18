@@ -1,0 +1,38 @@
+FROM registry.redhat.io/rhosp-rhel8/openstack-cinder-volume:16.2
+
+MAINTAINER Infinidat Host Team <kfred@infinidat.com>
+
+# Required Labels
+LABEL name="rhosp16/openstack-cinder-volume-infinidat-plugin" \
+      maintainer="kfred@infinidat.com" \
+      vendor="Infinidat" \
+      version="1.0" \
+      release="7" \
+      summary="Red Hat OpenStack Platform 16.2 cinder-volume Infinidat Plugin" \
+      description="Red Hat OpenStack Platform 16.2 cinder-volume Infinidat Plugin"
+
+USER root
+
+# Installing pip3.6 (for Train release)
+RUN curl -s https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
+RUN python3 get-pip.py
+
+# Installing dependencies
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -U setuptools
+COPY driver-requirements.txt /
+RUN pip install -r driver-requirements.txt
+
+# Infinidat: Out of tree Train code installation (valid until we have it in upstream)
+RUN curl -Ls https://raw.githubusercontent.com/Infinidat/cinder/infinidat/dev/train/cinder/volume/drivers/infinidat.py > $(find /usr/lib/python* -name infinidat.py)
+# Infinidat: CINDER-274 fix
+RUN curl -Ls https://raw.githubusercontent.com/psf/requests/v2.20.0/requests/__init__.py > /usr/lib/python3.6/site-packages/requests/__init__.py
+
+# Cleanup
+RUN rm -f /driver-requirements.txt /get-pip.py
+
+# Add required license as text file in Liceses directory (GPL, MIT, APACHE, Partner End User Agreement, etc)
+RUN mkdir /licenses
+COPY APACHE.license /licenses/licensing.txt
+
+USER cinder

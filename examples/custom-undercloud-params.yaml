@@ -1,0 +1,21 @@
+parameter_defaults:
+  BarbicanSimpleCryptoGlobalDefault: true
+  BarbicanWorkers: 1
+  GlanceEnabledImportMethods: glance-direct,web-download
+  OvercloudControllerFlavor: control
+  OvercloudComputeFlavor: compute
+  ControllerCount: 1
+  ComputeCount: 2
+  GlanceBackend: cinder
+  ComputeParameters:
+    KernelArgs: "tsx=off"
+  HostnameMap:
+    undercloud: rhosp-director
+  CinderBackupBackend: nfs
+  CinderBackupNfsShare: your.nfs_server.domain.com:/cinder_share
+  CinderBackupNfsMountOptions: vers=4
+  DockerInsecureRegistryAddress:
+  # IP address of the director node on the control network
+  - 192.168.24.1:5051
+  # DNS name of the director node and port of tripleo container registry
+  - rhosp-director.ctlplane.localdomain:8787
