@@ -16,8 +16,7 @@ parameter_defaults:
     - cinder-volume
     - cinder-backup
     set:
-      # IP address of the local registry for prebuilt images
-      namespace: 192.168.24.1:5051
+      namespace: registry.connect.redhat.com/infinidat
       name_prefix: openstack-
       name_suffix: -infinidat-plugin
       # Don't forget to update the tag if needed

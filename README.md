@@ -64,35 +64,12 @@ Running as a user **stack**
     # Update custom-undercloud-params.yaml with your values to adopt the deployment to your environment
 
 
-## Build and store plugin docker image
-
-Running as a user **stack**
-
-    sudo mkdir /srv/volumes/registry -p
-    sudo podman run -d --network host -e REGISTRY_HTTP_ADDR=192.168.24.1:5051 -v /srv/volumes/registry:/var/lib/registry:Z --restart=always --name local_registry registry:2
-    sudo podman login registry.redhat.io
-    sudo podman build -f Dockerfile.cinder-infi -t 192.168.24.1:5051/openstack-cinder-volume-infinidat-plugin:16.2s
-    sudo podman tag 192.168.24.1:5051/openstack-cinder-volume-infinidat-plugin:16.2m 192.168.24.1:5051/openstack-cinder-backup-infinidat-plugin:16.2s
-    sudo podman push --tls-verify=false 192.168.24.1:5051/openstack-cinder-volume-infinidat-plugin:16.2s
-    sudo podman push --tls-verify=false 192.168.24.1:5051/openstack-cinder-backup-infinidat-plugin:16.2s
-
-
 ## Install undercloud
 
 Running as a user **stack**
 
     tail -3 secrets.yaml >> containers-prepare-parameter.yaml
     openstack undercloud install
-
-
-## Store prebuilt image in your local registry
-
-Running as a user **stack**
-
-    sudo openstack tripleo container image push --local 192.168.24.1:5051/openstack-cinder-volume-infinidat-plugin:16.2s
-    sudo openstack tripleo container image push --local 192.168.24.1:5051/openstack-cinder-backup-infinidat-plugin:16.2s
-    sudo podman rmi 192.168.24.1:5051/openstack-cinder-backup-infinidat-plugin:16.2s
-    sudo podman rmi 192.168.24.1:5051/openstack-cinder-volume-infinidat-plugin:16.2s
 
 
 ## Install overcloud
