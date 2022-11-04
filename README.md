@@ -1,79 +1,210 @@
 # Documentation
 
- - [RHOSP 16.2 Deployment Guide](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html-single/director_installation_and_usage/index)
+ - [RedHat OpenStack Platform 16.2 Deployment Guide](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html-single/director_installation_and_usage/index)
+ - [OpenStack documentation](https://docs.openstack.org/cinder/train/configuration/block-storage/drivers/infinidat-volume-driver.html)
 
-# Pre deploy steps
+# Infinidat Infinibox storage deployment Guide for RHOSP 16.2
 
-## Set hostname and add user
+## Overview
 
-Running as a user **root**
+This page provides detailed steps on how to enable the containerized Infinidat cinder driver for RedHat OpenStack Platform.
+It also contains steps to deploy & configure Infinidat Infinibox backends for RedHat OpenStack Platform 16.2.
 
-    useradd stack
-    passwd stack
-    echo "stack ALL=(root) NOPASSWD:ALL" | tee -a /etc/sudoers.d/stack
-    chmod 0440 /etc/sudoers.d/stack
-    echo "$(ip r g 1 | head -1 | cut -d' ' -f7) rhosp-director.local rhosp-director" | tee -a /etc/hosts
-    su - stack
+The custom Cinder container image contains following packages:
 
-Running as a user **stack**
+- infinisdk
+- capacity
+- infi.dtypes.wwn
 
-    mkdir ~/images
-    sudo hostnamectl set-hostname rhosp-director.local
-    sudo hostnamectl set-hostname --transient rhosp-director.local
-    sudo hostname rhosp-director.local
-    echo rhosp-director.local | sudo tee /etc/hostname
-    sudo reboot
+## Prerequisites
 
+* Red Hat OpenStack Platform 16.2 with RedHat Enterprise Linux 8.2.
 
-## Register repositories and update OS
+* Infinidat Infinibox storage 4.0 or higher.
 
-Running as a user **stack**
+## Steps
 
-    sudo subscription-manager register --username redhat.infi --force
-    sudo subscription-manager list --available --all --matches="Red Hat OpenStack"
-    sudo subscription-manager attach --pool=<pool id>
-    cat /etc/redhat-release
-    sudo subscription-manager release --set=8.4
-    sudo subscription-manager repos --disable=*
-    sudo subscription-manager repos \
-      --enable=rhel-8-for-x86_64-baseos-eus-rpms \
-      --enable=rhel-8-for-x86_64-appstream-eus-rpms \
-      --enable=rhel-8-for-x86_64-highavailability-eus-rpms \
-      --enable=ansible-2.9-for-rhel-8-x86_64-rpms \
-      --enable=openstack-16.2-for-rhel-8-x86_64-rpms \
-      --enable=fast-datapath-for-rhel-8-x86_64-rpms
-    sudo dnf module disable -y container-tools:rhel8
-    sudo dnf module enable -y container-tools:3.0
-    sudo dnf update -y
-    sudo reboot
+### 1.	Prepare the Environment Files for Infinidat cinder backend in cinder-volume container
 
+#### 1.1 Environment File for cinder-volume container
 
-## Install base packages, TripleO client and registry
+To use Infinidat Infinibox as a block storage back end, cinder-volume container should be deployed.
 
-Running as a user **stack**
+Procedure
 
-    sudo dnf -y install vim git strace tmux tcpdump python3-tripleoclient ipmitool rhosp-director-images rhosp-director-images-ipa-x86_64
+Generate a default environment file that prepares images using your Satellite server as a source.
+Refer to an official RedHat OpenStack 16.2 deployment guide (Chapter: [3.16. Preparing a Satellite server for container images](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/director_installation_and_usage/assembly_preparing-for-director-installation#proc_preparing-a-satellite-server-for-container-images_preparing-for-director-installation)) point 9
 
+Edit the "containers-prepare-parameter.yaml" file.
 
-## Update your templates
+Add an exclude parameter to the strategy for the main Red Hat OpenStack Platform 16.2 cinder container image. 
 
-    # Update your secrets.yaml with real RedHat registry credentials
-    # Update the nodes.yaml file with IPMI access for undercloud ironic controller
-    # Specify infinibox addresses and pools for cinder backends at cinder-infinidat-config.yaml
-    # Check the ip address of the control network for overcloud containers-prepare-parameter.yaml
-    # Update custom-undercloud-params.yaml with your values to adopt the deployment to your environment
+```
+parameter_defaults:
+  ContainerImagePrepare:
+    - push_destination: true
+      excludes:
+        - cinder-volume
+      set:
+        namespace: registry.redhat.io/rhosp-rhel8
+        name_prefix: openstack-
+        name_suffix: ''
+        tag: 16.2
+        ...
+      tag_from_label: "{version}-{release}"
+```
 
+Check the [example "containers-prepare-parameter.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) from our repository.
 
-## Install undercloud
+Add a new strategy to the ContainerImagePrepare parameter that includes the replacement container image for the Infinidat Infinibox cinder plugin:
 
-Running as a user **stack**
+```
+parameter_defaults:
+  ContainerImagePrepare:
+    ...
+    - push_destination: true
+      includes:
+        - cinder-volume
+      set:
+        namespace: registry.connect.redhat.com/infinidat
+        name_prefix: openstack-
+        name_suffix: -infinidat-plugin
+        tag: latest
+        ...
+```
+Check the [example "containers-prepare-parameter.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) from our repository.
 
-    tail -3 secrets.yaml >> containers-prepare-parameter.yaml
-    openstack undercloud install
+Configure the authentication for the redhat registires at the ContainerImageRegistryCredentials parameter:
+Refer to Refer to an official RedHat OpenStack 16.2 deployment guide (Chapter: [3.9. Obtaining container images from private registries](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/director_installation_and_usage/assembly_preparing-for-director-installation#ref_obtaining-container-images-from-private-registries_preparing-for-director-installation))
 
+Use the "containers-prepare-parameter.yaml" file with any deployment commands, such as as openstack overcloud deploy:
 
-## Install overcloud
+```
+openstack overcloud deploy --templates
+    ...
+    -e containers-prepare-parameter.yaml
+    ...
+```
 
-Running as a user **stack**
+When director deploys the overcloud, the overcloud uses the Infinidat cinder container image instead of the standard cinder container image.
 
-    ./deploy_rhsop.sh --redeploy
+#### 1.2 Environment File for cinder backend
+
+The Infindiat Infinibox environment file for RedHat OpenStack Platform contains the settings for each backend you want to define.
+
+Create the environment file "cinder-infinidat-config.yaml" with below parameters and other backend details.
+
+```
+parameter_defaults:
+  CinderEnableIscsiBackend: false
+  CinderEnableRbdBackend: false
+  CinderEnableNfsBackend: false
+  NovaEnableRbdBackend: false
+  CinderDefaultVolumeType: infinidat-iscsi1
+  CinderRpcResponseTimeout: 180
+  NovaLibvirtVolumeUseMultipath: true
+  MultipathdEnable: true
+  MultipathdCustomConfigFile: /var/lib/mistral/multipath.conf
+  ControllerExtraConfig:
+    cinder::config::cinder_config:
+      infinidat-iscsi1/volume_driver:
+        value: cinder.volume.drivers.infinidat.InfiniboxVolumeDriver
+      infinidat-iscsi1/volume_backend_name:
+        value: infinidat-iscsi1
+      infinidat-iscsi1/san_ip:
+        value: infinibox.domain.com
+      infinidat-iscsi1/san_login:
+        value: your_san_login
+      infinidat-iscsi1/san_password:
+        value: your_san_password
+      infinidat-iscsi1/san_thin_provision:
+        value: true
+      infinidat-iscsi1/driver_use_ssl:
+        value: true
+      infinidat-iscsi1/suppress_requests_ssl_warnings:
+        value: true
+      infinidat-iscsi1/infinidat_pool_name:
+        value: rhsop_cinder_pool1
+      infinidat-iscsi1/infinidat_storage_protocol:
+        value: iscsi
+      infinidat-iscsi1/infinidat_iscsi_netspaces:
+        value: default_iscsi_space
+      infinidat-iscsi1/san_thin_provision:
+        value: true
+      infinidat-iscsi1/use_multipath_for_image_xfer:
+        value: true
+      infinidat-iscsi1/image_volume_cache_enabled:
+        value: false
+```
+
+Check the [example "cinder-infinidat-config.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config.yaml) from our repository.
+
+#### Additional Help
+
+For further details of Infinidat Infinibox storage cinder driver configuration, refer to an official OpenStack documentation [Chapter: INFINIDAT InfiniBox Block Storage driver](https://docs.openstack.org/cinder/train/configuration/block-storage/drivers/infinidat-volume-driver.html)
+
+### 2.	Deploy the overcloud and configured backends
+
+After creating the "cinder-infinidat-config.yaml" environment file with appropriate backends, deploy the backend configuration by running the openstack overcloud deploy command using the templates option.
+
+```
+openstack overcloud deploy --templates
+    ...
+    -e cinder-infinidat-config.yaml
+    ...
+```
+
+The order of the environment files (.yaml) is important as the parameters and resources defined in subsequent environment files take precedence.
+
+```
+openstack overcloud deploy --templates \
+    ...
+    -e /home/stack/templates/cinder-infinidat-config.yaml \
+    -e /home/stack/containers-prepare-parameter.yaml \
+    ...
+    --stack overcloud \
+    --log-file overcloud_hl_$(date +%d%m%Y%H%M%S).log | tee -a overcloud_deployment_$(date +%d%m%Y%H%M%S).log
+```
+
+### 3.	Verify the configured changes
+
+3.1	SSH to controller node from undercloud and check the docker process for cinder-volume
+```
+(overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman ps | grep cinder
+e7192ba6663c  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-api:16.2                  kolla_start           3 weeks ago   Up 27 hours ago                cinder_api
+4b2b34c038c0  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-api:16.2                  kolla_start           3 weeks ago   Up 27 hours ago                cinder_api_cron
+b8e45cae61fb  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-scheduler:16.2            kolla_start           3 weeks ago   Up 27 hours ago                cinder_scheduler
+54cc3b7449fa  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-backup:16.2               kolla_start           3 weeks ago   Up 27 hours ago                cinder_backup
+dc20a77daeee  cluster.common.tag/openstack-cinder-volume-infinidat-plugin:pcmklatest                             /bin/bash /usr/lo...  26 hours ago  Up 26 hours ago                openstack-cinder-volume-podman-0
+```
+
+3.2.	Verify that the infinisdk python library is present in the cinder-volume container
+```
+(overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman exec -it openstack-cinder-volume-podman-0 pip freeze | grep -i infinisdk
+infinisdk==206.1.2
+```
+
+3.3.	Verify that the backend details are visible in ```/etc/cinder/cinder.conf``` in the cinder-volume container
+
+Given below is an example of iSCSI backend details. Similar entries should be observed for FC backend too.
+
+```
+(overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman exec -it openstack-cinder-volume-podman-0 tail -20 /etc/cinder/cinder.conf
+...
+
+[infinidat-iscsi1]
+driver_use_ssl=True
+image_volume_cache_enabled=False
+infinidat_iscsi_netspaces=default_iscsi_space
+infinidat_pool_name=rhsop_cinder_pool1
+infinidat_storage_protocol=iscsi
+san_ip=infinibox.domain.com
+san_login=your_san_login
+san_password=your_san_password
+san_thin_provision=True
+suppress_requests_ssl_warnings=True
+use_multipath_for_image_xfer=True
+volume_backend_name=infinidat-iscsi1
+volume_driver=cinder.volume.drivers.infinidat.InfiniboxVolumeDriver
+backend_host=hostgroup
+```

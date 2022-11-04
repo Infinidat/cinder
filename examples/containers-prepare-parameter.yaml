@@ -3,7 +3,6 @@ parameter_defaults:
   - push_destination: true
     excludes:
     - cinder-volume
-    - cinder-backup
     set:
       name_prefix: openstack-
       name_suffix: ''
@@ -14,11 +13,10 @@ parameter_defaults:
   - push_destination: false
     includes:
     - cinder-volume
-    - cinder-backup
     set:
       namespace: registry.connect.redhat.com/infinidat
       name_prefix: openstack-
       name_suffix: -infinidat-plugin
       # Don't forget to update the tag if needed
-      tag: '16.2s'
+      tag: '16.2'
   ContainerImageRegistryLogin: true
