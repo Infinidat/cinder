@@ -1,4 +1,0 @@
-# INFINIDAT
-infinisdk # BSD-3
-capacity # BSD
-infi.dtypes.wwn # PSF

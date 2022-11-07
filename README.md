@@ -186,7 +186,7 @@ infinisdk==206.1.2
 
 3.3.	Verify that the backend details are visible in ```/etc/cinder/cinder.conf``` in the cinder-volume container
 
-Given below is an example of iSCSI backend details. Similar entries should be observed for FC backend too.
+Given below is an example of iSCSI backend details.
 
 ```
 (overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman exec -it openstack-cinder-volume-podman-0 tail -20 /etc/cinder/cinder.conf
