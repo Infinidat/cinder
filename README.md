@@ -137,7 +137,7 @@ parameter_defaults:
         value: false
 ```
 
-Check the [example "cinder-infinidat-config.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config.yaml) from our repository.
+Check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.
 
 #### Additional Help
 
