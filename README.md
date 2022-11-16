@@ -91,6 +91,8 @@ When director deploys the overcloud, the overcloud uses the Infinidat cinder con
 
 #### 1.2 Environment File for cinder backend
 
+> Note: Only iSCSI backend is currently officially supported. FC backend has not yet passed the certification for the RedHat OpenStack Platform 16.2
+
 The Infindiat Infinibox environment file for RedHat OpenStack Platform contains the settings for each backend you want to define.
 
 Create the environment file "cinder-infinidat-config.yaml" with below parameters and other backend details.
