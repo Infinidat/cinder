@@ -1,7 +1,8 @@
 # Documentation
 
  - [RedHat OpenStack Platform 16.2 Deployment Guide](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html-single/director_installation_and_usage/index)
- - [OpenStack documentation](https://docs.openstack.org/cinder/train/configuration/block-storage/drivers/infinidat-volume-driver.html)
+ - [RedHat OpenStack Platform 16.2 Overcloud Parameters](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html-single/overcloud_parameters/index)
+ - [Openstack Cinder Configuration For Infinidat Driver](https://docs.openstack.org/cinder/train/configuration/block-storage/drivers/infinidat-volume-driver.html)
 
 # Infinidat Infinibox storage deployment Guide for RHOSP 16.2
 
