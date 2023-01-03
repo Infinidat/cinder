@@ -14,11 +14,15 @@
 #    under the License.
 """Unit tests for INFINIDAT InfiniBox volume driver."""
 
+import functools
 import mock
 from oslo_utils import units
+import platform
+import socket
 
 from cinder import exception
 from cinder import test
+from cinder import version
 from cinder.volume import configuration
 from cinder.volume.drivers import infinidat
 
@@ -41,11 +45,24 @@ test_connector = dict(wwpns=[TEST_WWN_1],
                       initiator=TEST_IQN)
 
 
+def skip_driver_setup(func):
+    @functools.wraps(func)
+    def f(*args, **kwargs):
+        return func(*args, **kwargs)
+    f.__skip_driver_setup = True
+    return f
+
+
 class FakeInfinisdkException(Exception):
     pass
 
 
 class InfiniboxDriverTestCaseBase(test.TestCase):
+    def _test_skips_driver_setup(self):
+        test_method_name = self.id().split('.')[-1]
+        test_method = getattr(self, test_method_name)
+        return getattr(test_method, '__skip_driver_setup', False)
+
     def setUp(self):
         super(InfiniboxDriverTestCaseBase, self).setUp()
 
@@ -82,14 +99,17 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
         capacity.GiB = units.Gi
         infinisdk.core.exceptions.InfiniSDKException = FakeInfinisdkException
         infinisdk.InfiniBox.return_value = self._system
-        self.driver.do_setup(None)
+
+        if not self._test_skips_driver_setup():
+            self.driver.do_setup(None)
 
     def _infinibox_mock(self):
         result = mock.Mock()
         self._mock_volume = mock.Mock()
+        self._mock_volume.get_size.return_value = 1 * units.Gi
         self._mock_volume.has_children.return_value = False
         self._mock_volume.get_logical_units.return_value = []
-        self._mock_volume.create_child.return_value = self._mock_volume
+        self._mock_volume.create_snapshot.return_value = self._mock_volume
         self._mock_host = mock.Mock()
         self._mock_host.get_luns.return_value = []
         self._mock_host.map_volume().get_lun.return_value = 1
@@ -121,6 +141,43 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
 
 
 class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
+    def _generate_mock_object_metadata(self, cinder_object):
+        return {"system": "openstack",
+                "openstack_version": version.version_info.release_string(),
+                "cinder_id": cinder_object.id,
+                "cinder_name": cinder_object.name,
+                "host.created_by": infinidat._INFINIDAT_CINDER_IDENTIFIER}
+
+    def _validate_object_metadata(self, infinidat_object, cinder_object):
+        infinidat_object.set_metadata_from_dict.assert_called_once_with(
+            self._generate_mock_object_metadata(cinder_object))
+
+    def _generate_mock_host_metadata(self):
+        return {"system": "openstack",
+                "openstack_version": version.version_info.release_string(),
+                "hostname": socket.gethostname(),
+                "platform": platform.platform(),
+                "host.created_by": infinidat._INFINIDAT_CINDER_IDENTIFIER}
+
+    def _validate_host_metadata(self):
+        self._mock_host.set_metadata_from_dict.assert_called_once_with(
+            self._generate_mock_host_metadata())
+
+    @skip_driver_setup
+    def test__setup_and_get_system_object(self):
+        # This test should skip the driver setup, as it generates more calls to
+        # the add_auto_retry, set_source_identifier and login methods:
+        auth = (self.configuration.san_login,
+                self.configuration.san_password)
+
+        self.driver._setup_and_get_system_object(
+            self.configuration.san_ip, auth)
+
+        self._system.api.add_auto_retry.assert_called_once()
+        self._system.api.set_source_identifier.assert_called_once_with(
+            infinidat._INFINIDAT_CINDER_IDENTIFIER)
+        self._system.login.assert_called_once()
+
     def test_initialize_connection(self):
         self._system.hosts.safe_get.return_value = None
         result = self.driver.initialize_connection(test_volume, test_connector)
@@ -160,7 +217,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     def test_initialize_connection_metadata(self):
         self._system.hosts.safe_get.return_value = None
         self.driver.initialize_connection(test_volume, test_connector)
-        self._mock_host.set_metadata_from_dict.assert_called_once()
+        self._validate_host_metadata()
 
     def test_terminate_connection(self):
         self.driver.terminate_connection(test_volume, test_connector)
@@ -226,7 +283,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
     def test_create_volume_metadata(self, *mocks):
         self.driver.create_volume(test_volume)
-        self._mock_volume.set_metadata_from_dict.assert_called_once()
+        self._validate_object_metadata(self._mock_volume, test_volume)
 
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
     def test_create_volume_compression_enabled(self, *mocks):
@@ -268,6 +325,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
 
     def test_extend_volume(self):
         self.driver.extend_volume(test_volume, 2)
+        self._mock_volume.resize.assert_called_with(1 * units.Gi)
 
     def test_extend_volume_api_fail(self):
         self._mock_volume.resize.side_effect = self._raise_infinisdk
@@ -280,7 +338,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     def test_create_snapshot_metadata(self):
         self._mock_volume.create_snapshot.return_value = self._mock_volume
         self.driver.create_snapshot(test_snapshot)
-        self._mock_volume.set_metadata_from_dict.assert_called_once()
+        self._validate_object_metadata(self._mock_volume, test_snapshot)
 
     def test_create_snapshot_volume_doesnt_exist(self):
         self._system.volumes.safe_get.return_value = None
@@ -307,7 +365,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
                           test_clone, test_snapshot)
 
     def test_create_volume_from_snapshot_create_fails(self):
-        self._mock_volume.create_child.side_effect = self._raise_infinisdk
+        self._mock_volume.create_snapshot.side_effect = self._raise_infinisdk
         self.assertRaises(exception.VolumeBackendAPIException,
                           self.driver.create_volume_from_snapshot,
                           test_clone, test_snapshot)
@@ -384,7 +442,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
                 return_value=True)
     def test_create_group_metadata(self, *mocks):
         self.driver.create_group(None, test_group)
-        self._mock_group.set_metadata_from_dict.assert_called_once()
+        self._validate_object_metadata(self._mock_group, test_group)
 
     @mock.patch('cinder.volume.utils.is_group_a_cg_snapshot_type',
                 return_value=True)
@@ -529,6 +587,13 @@ class InfiniboxDriverTestCaseFC(InfiniboxDriverTestCaseBase):
         result = self.driver.initialize_connection(test_volume, connector)
         self.assertEqual(1, result["data"]["target_lun"])
 
+    def test_validate_connector(self):
+        fc_connector = {'wwpns': [TEST_WWN_1, TEST_WWN_2]}
+        iscsi_connector = {'initiator': TEST_IQN}
+        self.driver.validate_connector(fc_connector)
+        self.assertRaises(exception.InvalidConnectorException,
+                          self.driver.validate_connector, iscsi_connector)
+
 
 class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
     def setUp(self):
@@ -594,6 +659,13 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
 
     def test_terminate_connection(self):
         self.driver.terminate_connection(test_volume, test_connector)
+
+    def test_validate_connector(self):
+        fc_connector = {'wwpns': [TEST_WWN_1, TEST_WWN_2]}
+        iscsi_connector = {'initiator': TEST_IQN}
+        self.driver.validate_connector(iscsi_connector)
+        self.assertRaises(exception.InvalidConnectorException,
+                          self.driver.validate_connector, fc_connector)
 
 
 class InfiniboxDriverTestCaseQoS(InfiniboxDriverTestCaseBase):
