@@ -81,6 +81,7 @@ class StorwizeSVCManagementSimulator(object):
         self._partnership_list = {}
         self._partnershipcandidate_list = {}
         self._rcconsistgrp_list = {}
+        self._volumegroup_list = {}
         self._system_list = {'storwize-svc-sim': {'id': '0123456789ABCDEF',
                                                   'name': 'storwize-svc-sim'},
                              'aux-svc-sim': {'id': 'ABCDEF0123456789',
@@ -375,7 +376,8 @@ class StorwizeSVCManagementSimulator(object):
             'thin',
             'removehostmappings',
             'removefcmaps',
-            'removercrelationships'
+            'removercrelationships',
+            'novolumegroup'
         ]
         one_param_args = [
             'chapsecret',
@@ -416,6 +418,7 @@ class StorwizeSVCManagementSimulator(object):
             'pool',
             'site',
             'buffersize',
+            'volumegroup'
         ]
         no_or_one_param_args = [
             'autoexpand',
@@ -2039,7 +2042,8 @@ port_speed!N/A
         kwargs.pop('obj')
 
         params = ['name', 'warning', 'udid',
-                  'autoexpand', 'easytier', 'primary']
+                  'autoexpand', 'easytier', 'primary',
+                  'volumegroup', 'novolumegroup']
         for key, value in kwargs.items():
             if key == 'easytier':
                 vol['easy_tier'] = value
@@ -2067,6 +2071,8 @@ port_speed!N/A
                 else:
                     err = self._errors['CMMVC6353E'][1] % {'VALUE': key}
                     return ('', err)
+            if key == 'volumegroup':
+                self._volumes_list[vol_name]['volume_group_id'] = value
             if key in params:
                 vol[key] = value
                 if key == 'autoexpand':
@@ -2530,6 +2536,121 @@ port_speed!N/A
                 return ('', '')
             except Exception:
                 return self._errors['CMMVC5982E']
+
+    def _cmd_mkvolumegroup(self, **kwargs):
+        # Create a Volume group
+        volumegroup_info = {}
+        volumegroup_info['id'] = self._find_unused_id(self._volumegroup_list)
+        if 'name' in kwargs:
+            volumegroup_info['name'] = kwargs["name"].strip('\'\"')
+        else:
+            volumegroup_info['name'] = self.driver._get_volumegroup_name(
+                None, volumegroup_info['id'])
+        volumegroup_info['volume_count'] = '0'
+        volumegroup_info['backup_status'] = 'empty'
+        volumegroup_info['last_backup_time'] = ''
+        volumegroup_info['owner_id'] = ''
+        volumegroup_info['owner_name'] = ''
+        volumegroup_info['safeguarded_policy_id'] = ''
+        volumegroup_info['safeguarded_policy_name'] = ''
+        volumegroup_info['safeguarded_policy_start_time'] = ''
+        volumegroup_info['volume_group_type'] = ''
+        volumegroup_info['uid'] = (('ABCDEF' * 3) + ('0' * 14) +
+                                   volumegroup_info['id'])
+        volumegroup_info['source_volume_group_id'] = ''
+        volumegroup_info['source_volume_group_name'] = ''
+        volumegroup_info['parent_uid'] = ''
+        volumegroup_info['source_snapshot_id'] = ''
+        volumegroup_info['source_snapshot'] = ''
+        volumegroup_info['snapshot_count'] = '0'
+        volumegroup_info['protection_provisioned_capacity'] = '0.00MB'
+        volumegroup_info['protection_written_capacity'] = '0.00MB'
+        volumegroup_info['snapshot_policy_id'] = ''
+        volumegroup_info['snapshot_policy_name'] = ''
+        self._volumegroup_list[volumegroup_info['name']] = volumegroup_info
+        return ('Volume Group, id [' + volumegroup_info['id'] +
+                '], successfully created', '')
+
+    def _cmd_lsvolumegroup(self, **kwargs):
+        # List the volume group
+        if 'obj' not in kwargs:
+            rows = []
+            rows.append(['id', 'name', 'volume_count', 'backup_status',
+                         'last_backup_time', 'owner_id', 'owner_name',
+                         'safeguarded_policy_id', 'safeguarded_policy_name',
+                         'safeguarded_policy_start_time', 'volume_group_type',
+                         'uid', 'source_volume_group_id',
+                         'source_volume_group_name', 'parent_uid',
+                         'source_snapshot_id', 'source_snapshot',
+                         'snapshot_count', 'protection_provisioned_capacity',
+                         'protection_written_capacity', 'snapshot_policy_id',
+                         'snapshot_policy_name'])
+            found = False
+            for volumegroup_name in sorted(self._volumegroup_list.keys()):
+                volumegroup = self._volumegroup_list[volumegroup_name]
+                filterstr = 'name=' + volumegroup['name']
+                if (('filtervalue' not in kwargs) or
+                        (kwargs['filtervalue'] == filterstr)):
+                    rows.append(['0', 'empty', '', '', '', '', '', '', '',
+                                 '((\'ABCDEF\' * 3) + (\'0\' * 14) +\
+                                 vg_info[\'id\'])', '', '', '', '', '', '0',
+                                 '0.00MB', '0.00MB', '', ''])
+                    found = True
+            if found:
+                return self._print_info_cmd(rows=rows, **kwargs)
+            else:
+                return ('', '')
+        else:
+            volumegroup_info = kwargs['obj'].strip('\'\"')
+            if volumegroup_info not in self._volumegroup_list:
+                return self._errors['CMMVC5804E']
+            volumegroup_info = self._volumegroup_list[volumegroup_info]
+            rows = []
+            rows.append(['id', volumegroup_info['id']])
+            rows.append(['name', volumegroup_info['name']])
+            rows.append(['volume_count', '1'])
+            rows.append(['backup_status', 'off'])
+            rows.append(['last_backup_time',
+                        volumegroup_info['last_backup_time']])
+            rows.append(['owner_id', volumegroup_info['owner_id']])
+            rows.append(['owner_name', volumegroup_info['owner_name']])
+            rows.append(['safeguarded_policy_id',
+                        volumegroup_info['safeguarded_policy_id']])
+            rows.append(['safeguarded_policy_name',
+                        volumegroup_info['safeguarded_policy_name']])
+            rows.append(['safeguarded_policy_start_time',
+                        volumegroup_info['safeguarded_policy_start_time']])
+            rows.append(['volume_group_type',
+                        volumegroup_info['volume_group_type']])
+            rows.append(['source_volume_group_id',
+                        volumegroup_info['source_volume_group_id']])
+            rows.append(['source_volume_group_name',
+                        volumegroup_info['source_volume_group_name']])
+            rows.append(['parent_uid', volumegroup_info['parent_uid']])
+            rows.append(['source_snapshot_id',
+                        volumegroup_info['source_snapshot_id']])
+            rows.append(['source_snapshot',
+                        volumegroup_info['source_snapshot']])
+            rows.append(['snapshot_count', volumegroup_info['snapshot_count']])
+            rows.append(['protection_provisioned_capacity', '1.00GB'])
+            rows.append(['protection_written_capacity', '0.75MB'])
+            rows.append(['snapshot_policy_id',
+                        volumegroup_info['snapshot_policy_id']])
+            rows.append(['snapshot_policy_name',
+                        volumegroup_info['snapshot_policy_name']])
+
+            if 'delim' in kwargs:
+                for index in range(len(rows)):
+                    rows[index] = kwargs['delim'].join(rows[index])
+            return ('%s' % '\n'.join(rows), '')
+
+    def _cmd_rmvolumegroup(self, **kwargs):
+        # Delete a Volume Group
+        if 'obj' not in kwargs:
+            return self._errors['CMMVC5701E']
+        volumegroup_name = kwargs['obj'].strip('\'\"')
+        del self._volumegroup_list[volumegroup_name]
+        return ('', '')
 
     def _cmd_mkrcconsistgrp(self, **kwargs):
         master_sys = self._system_list['storwize-svc-sim']
@@ -4995,6 +5116,66 @@ class StorwizeSVCCommonDriverTestCase(test.TestCase):
         self.driver.do_setup(None)
 
     @mock.patch.object(storwize_svc_common.StorwizeSSH,
+                       'lsip')
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'get_node_info')
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'get_system_info')
+    def test_storwize_add_iscsi_ip_address(self, get_system_info,
+                                           get_node_info, lsip):
+        helper = self.driver._master_backend_helpers
+        helper.state = {'storage_nodes': {}, 'enabled_protocols': set(),
+                        'compression_enabled': False, 'available_iogrps': [],
+                        'system_name': None, 'system_id': None,
+                        'code_level': None}
+        get_system_info.return_value = {'code_level': (8, 5, 0, 0),
+                                        'topology': 'standard',
+                                        'system_name': 'storwize-svc-sim',
+                                        'system_id': '0123456789ABCDEF'}
+
+        get_node_info.return_value = {'1': {'id': '1', 'name': 'node1',
+                                            'IO_group': 0,
+                                            'iscsi_name': 'test_iscsi1',
+                                            'site_id': '1',
+                                            'site_name': 'site1',
+                                            'ipv4': [],
+                                            'ipv6': [],
+                                            'IP_address': [],
+                                            'WWPN': [],
+                                            'enabled_protocols': [],
+                                            'status': 'online'},
+                                      '2': {'id': '2', 'name': 'node2',
+                                            'IO_group': 1,
+                                            'iscsi_name': 'test_iscsi2',
+                                            'site_id': '1',
+                                            'site_name': 'site1',
+                                            'ipv4': [],
+                                            'ipv6': [],
+                                            'IP_address': [],
+                                            'WWPN': [],
+                                            'enabled_protocols': [],
+                                            'status': 'online'}}
+
+        lsip.return_value = [{'node_id': '1', 'IP_address': '1.1.1.1'},
+                             {'node_id': '2', 'IP_address': '2.2.2.2'}]
+
+        # Initially the storage_nodes will be empty
+        self.assertEqual(helper.state["storage_nodes"], {})
+
+        # _update_storwize_state will update the code_level
+        # and node info. After that it will call add_iscsi_ip_addrs to
+        # update the IP_address for the corresponding node_id in storage_nodes
+        self.driver._update_storwize_state(helper.state, helper)
+
+        # Now, IPs of both the node_id in storage_nodes is updated correctly
+        # Which means add_iscsi_ip_addrs was successful.
+        self.assertNotEqual(helper.state["storage_nodes"], {})
+        self.assertEqual(helper.state["storage_nodes"]['1']['IP_address'],
+                         ['1.1.1.1'])
+        self.assertEqual(helper.state["storage_nodes"]['2']['IP_address'],
+                         ['2.2.2.2'])
+
+    @mock.patch.object(storwize_svc_common.StorwizeSSH,
                        'mkhost')
     def test_storwize_create_host_with_portset(self, mkhost):
         self.driver.do_setup(self.ctxt)
@@ -5223,6 +5404,16 @@ class StorwizeSVCCommonDriverTestCase(test.TestCase):
             self.assertIsNotNone(nodes)
         elif online_node and node_status == 'offline':
             self.assertEqual(nodes, empty_nodes_info)
+
+    @mock.patch.object(storwize_svc_common.StorwizeSVCCommonDriver,
+                       '_build_pool_stats')
+    def test_update_volume_stats_non_replication(self, _build_pool_stats):
+        self.driver._update_volume_stats()
+        self.assertFalse(self.driver._replica_enabled)
+        self.assertEqual(SVC_POOLS, self.driver._get_backend_pools())
+        self.assertEqual(len(SVC_POOLS), _build_pool_stats.call_count)
+        self.assertIsNotNone(self.driver._master_backend_helpers.stats)
+        self.assertIsNone(self.driver._aux_backend_helpers)
 
     @ddt.data((False, 'enabled', ''),
               (False, 'disabled', 'site 2 down'),
@@ -6902,6 +7093,120 @@ class StorwizeSVCCommonDriverTestCase(test.TestCase):
             self.assertEqual(fields.GroupStatus.ERROR, model_update['status'])
 
     @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'create_volumegroup')
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'delete_volumegroup')
+    def test_storwize_create_and_delete_volumegroup(self, delete_volumegroup,
+                                                    create_volumegroup):
+        """Test volume group creation and deletion"""
+        with mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                               'get_system_info') as get_system_info:
+            fake_system_info = {'code_level': (8, 5, 1, 0),
+                                'system_name': 'storwize-svc-sim',
+                                'system_id': '0123456789ABCDEF'}
+            get_system_info.return_value = fake_system_info
+            self.driver.do_setup(None)
+
+        volumegroup_spec = {'volume_group_enabled': '<is> True'}
+        volumegroup_type_ref = group_types.create(self.ctxt,
+                                                  'volumegroup_type',
+                                                  volumegroup_spec)
+        volumegroup_type = objects.GroupType.get_by_id(
+            self.ctxt, volumegroup_type_ref['id'])
+
+        vol_type_ref = volume_types.create(self.ctxt, 'non_rep_type', {})
+        volumegroup = testutils.create_group(
+            self.ctxt, group_type_id=volumegroup_type.id,
+            volume_type_ids=[vol_type_ref['id']])
+
+        # Create Volume Group
+        model_update = self.driver.create_group(self.ctxt, volumegroup)
+        self.assertTrue(create_volumegroup.called)
+        self.assertEqual(fields.GroupStatus.AVAILABLE,
+                         model_update['status'])
+        # Delete Volume Group
+        model_update = self.driver.delete_group(self.ctxt, volumegroup, None)
+        self.assertTrue(delete_volumegroup.called)
+        self.assertEqual(fields.GroupStatus.DELETED,
+                         model_update[0]['status'])
+
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'create_volumegroup')
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'delete_volumegroup')
+    def test_storwize_update_volumegroup(self, delete_volumegroup,
+                                         create_volumegroup):
+        """Test volume group updation"""
+        with mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                               'get_system_info') as get_system_info:
+            fake_system_info = {'code_level': (8, 5, 1, 0),
+                                'system_name': 'storwize-svc-sim',
+                                'system_id': '0123456789ABCDEF'}
+            get_system_info.return_value = fake_system_info
+            self.driver.do_setup(None)
+
+            # Create volumegroup type
+            volumegroup_spec = {'volume_group_enabled': '<is> True'}
+            volumegroup_type_ref = group_types.create(self.ctxt,
+                                                      'volumegroup_type',
+                                                      volumegroup_spec)
+            volumegroup_type = objects.GroupType.get_by_id(
+                self.ctxt, volumegroup_type_ref['id'])
+
+            # Create volume
+            vol_type_ref = volume_types.create(self.ctxt, 'non_rep_type', {})
+            vol_type = objects.VolumeType.get_by_id(self.ctxt,
+                                                    vol_type_ref['id'])
+            volume = self._generate_vol_info(vol_type)
+            self.driver.create_volume(volume)
+
+            # Create volumegroup
+            volumegroup = testutils.create_group(
+                self.ctxt, group_type_id=volumegroup_type.id,
+                volume_type_ids=[vol_type_ref['id']])
+
+            model_update = self.driver.create_group(self.ctxt, volumegroup)
+            self.assertTrue(create_volumegroup.called)
+            self.assertEqual(fields.GroupStatus.AVAILABLE,
+                             model_update['status'])
+
+            add_vols = [volume]
+            remove_vols = [volume]
+            with mock.patch.object(
+                    storwize_svc_common.StorwizeSVCCommonDriver,
+                    '_update_volumegroup') as _update_volumegroup:
+                model_update = {'status': 'available'}
+                fake_update_volumegroup_info = [model_update, add_vols, None]
+                _update_volumegroup.return_value = fake_update_volumegroup_info
+                (model_update, add_volumes_update,
+                    remove_volumes_update) = self.driver.update_group(
+                        self.ctxt, volumegroup, add_vols, [])
+
+                self.assertTrue(_update_volumegroup.called)
+                self.assertEqual(fields.GroupStatus.AVAILABLE,
+                                 model_update['status'])
+
+                model_update = {'status': 'available'}
+                fake_update_volumegroup_info = [model_update, None,
+                                                remove_vols]
+                _update_volumegroup.return_value = (
+                    fake_update_volumegroup_info)
+                (model_update, add_volumes_update,
+                    remove_volumes_update) = self.driver.update_group(
+                        self.ctxt, volumegroup, [], remove_vols)
+
+                self.assertTrue(_update_volumegroup.called)
+                self.assertEqual(fields.GroupStatus.AVAILABLE,
+                                 model_update['status'])
+
+            # Delete Volume Group
+            model_update = self.driver.delete_group(self.ctxt, volumegroup,
+                                                    None)
+            self.assertTrue(delete_volumegroup.called)
+            self.assertEqual(fields.GroupStatus.DELETED,
+                             model_update[0]['status'])
+
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
                        'create_rccg')
     def test_storwize_group_create(self, create_rccg):
         """Test group create."""
@@ -6940,7 +7245,8 @@ class StorwizeSVCCommonDriverTestCase(test.TestCase):
     def test_storwize_delete_group(self, _del_rep_grp, is_grp_a_cg_rep_type,
                                    is_grp_a_cg_snapshot_type):
         is_grp_a_cg_snapshot_type.side_effect = [True, True, False, True]
-        is_grp_a_cg_rep_type.side_effect = [False, False, False, False]
+        is_grp_a_cg_rep_type.side_effect = [False, False, False, False,
+                                            False, False]
         type_ref = volume_types.create(self.ctxt, 'testtype', None)
         group = testutils.create_group(self.ctxt,
                                        group_type_id=fake.GROUP_TYPE_ID,
@@ -6969,7 +7275,7 @@ class StorwizeSVCCommonDriverTestCase(test.TestCase):
                                    is_grp_a_cg_snapshot_type):
         """Test group update."""
         is_grp_a_cg_snapshot_type.side_effect = [False, True, True, False]
-        is_grp_a_cg_rep_type.side_effect = [False, False, False,
+        is_grp_a_cg_rep_type.side_effect = [False, False, False, False,
                                             False, True, True]
         group = mock.MagicMock()
         self.assertRaises(NotImplementedError, self.driver.update_group,
@@ -11041,6 +11347,38 @@ class StorwizeSVCReplicationTestCase(test.TestCase):
     def _get_pool_volumes(self, pool):
         vdisks = self.sim._cmd_lsvdisks_from_filter('mdisk_grp_name', pool)
         return vdisks
+
+    @mock.patch.object(storwize_svc_common.StorwizeSVCCommonDriver,
+                       '_build_pool_stats')
+    def test_update_volume_stats_replication(self, _build_pool_stats):
+        self.driver.configuration.set_override('replication_device',
+                                               [self.rep_target])
+        self.driver._update_volume_stats()
+        self.assertTrue(self.driver._replica_enabled)
+        target_pools = [self.driver._replica_target.get('pool_name')]
+        # Expected call count = Number of primary Pools and Secondary Pools
+        expected_call_count = len(SVC_POOLS) + len(target_pools)
+        self.assertEqual(expected_call_count, _build_pool_stats.call_count)
+        self.assertIsNotNone(self.driver._master_backend_helpers.stats)
+        self.assertIsNotNone(self.driver._aux_backend_helpers.stats)
+
+    @ddt.data((False, False), (True, True))
+    @mock.patch.object(storwize_svc_common.StorwizeHelpers,
+                       'get_pool_attrs')
+    @ddt.unpack
+    def test_build_pool_stats_calls(self, replication_enabled,
+                                    target, get_pool_attrs):
+        pool = "openstack"
+        master_helper = self.driver._master_backend_helpers
+        target_helper = self.driver._aux_backend_helpers
+        if replication_enabled:
+            self.driver.configuration.set_override('replication_device',
+                                                   [self.rep_target])
+        self.driver._build_pool_stats(pool, target)
+        if target:
+            target_helper.get_pool_attrs.assert_called_once_with(pool)
+        else:
+            master_helper.get_pool_attrs.assert_called_once_with(pool)
 
     def test_storwize_do_replication_setup_error(self):
         fake_targets = [self.rep_target, self.rep_target]

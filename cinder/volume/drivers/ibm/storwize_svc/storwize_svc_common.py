@@ -540,6 +540,52 @@ class StorwizeSSH(object):
         ssh_cmd = ['svctask', 'rmhost', '"%s"' % host]
         self.run_ssh_assert_no_output(ssh_cmd)
 
+    def mkvolumegroup(self, volumegroup_name):
+        """Create a volume group(VG)."""
+        ssh_cmd = ['svctask', 'mkvolumegroup', '-name', '"%s"'
+                   % volumegroup_name]
+        try:
+            return self.run_ssh_check_created(ssh_cmd)
+        except Exception as ex:
+            if hasattr(ex, 'msg') and 'CMMVC6035E' in ex.msg:
+                msg = (_('CMMVC6372W Action failed because volume group '
+                         'with the name provided already exists.'))
+                LOG.error(msg)
+                raise exception.VolumeBackendAPIException(data=msg)
+            with excutils.save_and_reraise_exception():
+                LOG.exception('Failed to create volumegroup.')
+
+    def lsvolumegroup(self, volumegroup_id_or_name):
+        """Return volume group attributes or None if it doesn't exist."""
+        ssh_cmd = ['svcinfo', 'lsvolumegroup', '-bytes', '-delim', '!',
+                   '"%s"' % volumegroup_id_or_name]
+        out, err = self._ssh(ssh_cmd, check_exit_code=False)
+        if not err:
+            return CLIResponse((out, err), ssh_cmd=ssh_cmd, delim='!',
+                               with_header=False)[0]
+        if 'CMMVC5804E' in err:
+            return None
+        msg = (_('CLI Exception output:\n command: %(cmd)s\n '
+                 'stdout: %(out)s\n stderr: %(err)s.') %
+               {'cmd': ssh_cmd,
+                'out': out,
+                'err': err})
+        LOG.error(msg)
+        raise exception.VolumeBackendAPIException(data=msg)
+
+    def rmvolumegroup(self, volumegroup_name_or_id):
+        """Delete a volume group"""
+        ssh_cmd = ['svctask', 'rmvolumegroup', '"%s"' % volumegroup_name_or_id]
+        try:
+            self.run_ssh_assert_no_output(ssh_cmd)
+        except Exception as ex:
+            if hasattr(ex, 'msg') and 'CMMVC8749E' in ex.msg:
+                msg = _('rmvolumegroup: specified volume group is not empty.')
+                LOG.error(msg)
+                raise exception.VolumeDriverException(message=msg)
+            with excutils.save_and_reraise_exception():
+                LOG.exception('Failed to delete volumegroup.')
+
     def mkvdisk(self, name, size, units, pool, opts, params):
         ssh_cmd = ['svctask', 'mkvdisk', '-name', '"%s"' % name, '-mdiskgrp',
                    '"%s"' % pool, '-iogrp', six.text_type(opts['iogrp']),
@@ -1105,18 +1151,19 @@ class StorwizeHelpers(object):
         if code_level >= (8, 4, 2, 0):
             portset_name = portset if portset else 'portset0'
             lsip_resp = self.ssh.lsip(portset=portset_name)
+            # For every node_id there is one IP address in a particular
+            # portset_name. Hence storing that one IP address of the
+            # corresponding node_id in storage_node list.
             for node_data in storage_nodes:
-                ip_addresses = []
                 try:
                     for ip_data in lsip_resp:
                         if ip_data['node_id'] in node_data:
-                            if (ip_data['IP_address']):
-                                ip_addresses.append(ip_data['IP_address'])
+                            if ip_data['IP_address']:
+                                (storage_nodes[ip_data['node_id']]
+                                    ['IP_address']) = (
+                                        [ip_data['IP_address']])
                 except KeyError:
                     self.handle_keyerror('lsip', ip_data)
-                if ip_addresses:
-                    storage_nodes[ip_data['node_id']]['IP_address'] = (
-                        ip_addresses)
         else:
             lsportip_resp = self.ssh.lsportip()
             for ip_data in lsportip_resp:
@@ -2769,6 +2816,34 @@ class StorwizeHelpers(object):
         else:
             return None
 
+    def create_volumegroup(self, volumegroup_name):
+        self.ssh.mkvolumegroup(volumegroup_name)
+
+    def get_volumegroup(self, volumegroup_id_or_name):
+        vg = self.ssh.lsvolumegroup(volumegroup_id_or_name)
+        return vg if len(vg) > 0 else None
+
+    def delete_volumegroup(self, volumegroup_id_or_name):
+        if self.ssh.lsvolumegroup(volumegroup_id_or_name):
+            self.ssh.rmvolumegroup(volumegroup_id_or_name)
+
+    def add_vdisk_to_volumegroup(self, vol_name, volumegroup_id):
+        self.ssh.chvdisk(vol_name, ['-volumegroup', volumegroup_id])
+
+    def remove_vdisk_from_volumegroup(self, vol_name):
+        self.ssh.chvdisk(vol_name, ['-novolumegroup'])
+
+    def check_codelevel_for_volumegroup(self, code_level):
+        if not (code_level >= (8, 5, 1, 0)):
+            msg = (_('The configured group type spec is '
+                     '"volume_group_enabled". '
+                     'The supported code level for this group type spec '
+                     'is 8.5.1.0 '
+                     'The current storage code level is %(code_level)s.')
+                   % {'code_level': code_level})
+            LOG.error(msg)
+            raise exception.VolumeDriverException(message=msg)
+
     def get_partnership_info(self, system_name):
         partnership = self.ssh.lspartnership(system_name)
         return partnership[0] if len(partnership) > 0 else None
@@ -3711,6 +3786,13 @@ class StorwizeSVCCommonDriver(san.SanDriver,
         if not volume.metadata:
             volume.metadata = dict()
         volume.metadata['Consistency Group Name'] = rccg_name
+        volume.save()
+
+    def _update_volumegroup_properties(self, ctxt, volume, group=None):
+        volumegroup_name = self._get_volumegroup_name(group) if group else ""
+        if not volume.metadata:
+            volume.metadata = dict()
+        volume.metadata['Volume Group Name'] = volumegroup_name
         volume.save()
 
     def create_volume(self, volume):
@@ -5992,6 +6074,12 @@ class StorwizeSVCCommonDriver(san.SanDriver,
                 if hyper_grp else storwize_const.RCCG_PREFIX)
         return rccg + group_id[0:4] + '-' + group_id[-5:]
 
+    @staticmethod
+    def _get_volumegroup_name(group, grp_id=None):
+        group_id = group.id if group else grp_id
+        vg = storwize_const.VG_PREFIX
+        return vg + group_id[0:4] + '-' + group_id[-5:]
+
     # Add CG capability to generic volume groups
     def create_group(self, context, group):
         """Creates a group.
@@ -6013,7 +6101,8 @@ class StorwizeSVCCommonDriver(san.SanDriver,
         support_grps = ['group_snapshot_enabled',
                         'consistent_group_snapshot_enabled',
                         'consistent_group_replication_enabled',
-                        'hyperswap_group_enabled']
+                        'hyperswap_group_enabled',
+                        'volume_group_enabled']
         supported_grp = False
         for grp_spec in support_grps:
             if volume_utils.is_group_a_type(group, grp_spec):
@@ -6104,6 +6193,19 @@ class StorwizeSVCCommonDriver(san.SanDriver,
                     model_update = {'status': fields.GroupStatus.ERROR}
                     return model_update
 
+        if volume_utils.is_group_a_type(group, "volume_group_enabled"):
+            try:
+                self._helpers.check_codelevel_for_volumegroup(
+                    self._state['code_level'])
+                volumegroup_name = self._get_volumegroup_name(group)
+                self._helpers.create_volumegroup(volumegroup_name)
+            except exception.VolumeBackendAPIException as err:
+                LOG.error("Failed to create volume group %(volumegroup)s. "
+                          "Exception: %(exception)s.",
+                          {'volumegroup': volumegroup_name, 'exception': err})
+                model_update = {'status': fields.GroupStatus.ERROR}
+                return model_update
+
         return model_update
 
     def delete_group(self, context, group, volumes):
@@ -6125,7 +6227,10 @@ class StorwizeSVCCommonDriver(san.SanDriver,
                     "consistent_group_replication_enabled")
                 and not volume_utils.is_group_a_type(
                     group,
-                    "hyperswap_group_enabled")):
+                    "hyperswap_group_enabled")
+                and not volume_utils.is_group_a_type(
+                    group,
+                    "volume_group_enabled")):
             raise NotImplementedError()
 
         model_update = {'status': fields.GroupStatus.DELETED}
@@ -6135,9 +6240,14 @@ class StorwizeSVCCommonDriver(san.SanDriver,
             model_update, volumes_model_update = self._delete_replication_grp(
                 group, volumes)
 
-        if volume_utils.is_group_a_type(group, "hyperswap_group_enabled"):
+        elif volume_utils.is_group_a_type(group, "hyperswap_group_enabled"):
             model_update, volumes_model_update = self._delete_hyperswap_grp(
                 group, volumes)
+
+        elif volume_utils.is_group_a_type(group, "volume_group_enabled"):
+            self._helpers.check_codelevel_for_volumegroup(
+                self._state['code_level'])
+            model_update = self._delete_volumegroup(group)
 
         else:
             for volume in volumes:
@@ -6182,7 +6292,10 @@ class StorwizeSVCCommonDriver(san.SanDriver,
                     "consistent_group_replication_enabled")
                 and not volume_utils.is_group_a_type(
                     group,
-                    "hyperswap_group_enabled")):
+                    "hyperswap_group_enabled")
+                and not volume_utils.is_group_a_type(
+                    group,
+                    "volume_group_enabled")):
             raise NotImplementedError()
 
         if volume_utils.is_group_a_type(
@@ -6196,6 +6309,12 @@ class StorwizeSVCCommonDriver(san.SanDriver,
 
         if volume_utils.is_group_a_cg_snapshot_type(group):
             return None, None, None
+
+        if volume_utils.is_group_a_type(group, "volume_group_enabled"):
+            self._helpers.check_codelevel_for_volumegroup(
+                self._state['code_level'])
+            return self._update_volumegroup(context, group, add_volumes,
+                                            remove_volumes)
 
     def create_group_from_src(self, context, group, volumes,
                               group_snapshot=None, snapshots=None,
@@ -6491,6 +6610,11 @@ class StorwizeSVCCommonDriver(san.SanDriver,
             data['replication_enabled'] = self._replica_enabled
             data['replication_targets'] = self._get_replication_targets()
             data['consistent_group_replication_enabled'] = True
+            remote_data = dict()
+            remote_data['pools'] = [self._build_pool_stats(pool, target=True)
+                                    for pool in
+                                    [self._replica_target.get('pool_name')]]
+            self._aux_backend_helpers.stats = remote_data
 
         if self._helpers.is_system_topology_hyperswap(self._state):
             data['replication_enabled'] = True
@@ -6505,12 +6629,19 @@ class StorwizeSVCCommonDriver(san.SanDriver,
 
         self._stats = data
 
-    def _build_pool_stats(self, pool):
+    def _build_pool_stats(self, pool, target=False):
         """Build pool status"""
         QoS_support = True
         pool_stats = {}
         is_dr_pool = False
-        pool_data = self._helpers.get_pool_attrs(pool)
+        if target:
+            pool_data = self._aux_backend_helpers.get_pool_attrs(pool)
+            system_id = self._aux_state['system_id']
+            compression_enabled = self._aux_state['compression_enabled']
+        else:
+            pool_data = self._helpers.get_pool_attrs(pool)
+            system_id = self._state['system_id']
+            compression_enabled = self._state['compression_enabled']
         if pool_data:
             easy_tier = pool_data['easy_tier'] in ['on', 'auto']
             total_capacity_gb = float(pool_data['capacity']) / units.Gi
@@ -6527,7 +6658,7 @@ class StorwizeSVCCommonDriver(san.SanDriver,
             over_sub_ratio = self.configuration.safe_get(
                 'max_over_subscription_ratio')
             location_info = ('StorwizeSVCDriver:%(sys_id)s:%(pool)s' %
-                             {'sys_id': self._state['system_id'],
+                             {'sys_id': system_id,
                               'pool': pool_data['name']})
             multiattach = (self.configuration.
                            storwize_svc_multihostmap_enabled)
@@ -6545,7 +6676,7 @@ class StorwizeSVCCommonDriver(san.SanDriver,
                 'free_capacity_gb': free_capacity_gb,
                 'allocated_capacity_gb': allocated_capacity_gb,
                 'provisioned_capacity_gb': provisioned_capacity_gb,
-                'compression_support': self._state['compression_enabled'],
+                'compression_support': compression_enabled,
                 'reserved_percentage':
                     self.configuration.reserved_percentage,
                 'QoS_support': QoS_support,
@@ -6778,6 +6909,75 @@ class StorwizeSVCCommonDriver(san.SanDriver,
                 LOG.error("Failed to remove the remote copy of volume %(vol)s "
                           "from group. Exception: %(exception)s.",
                           {'vol': volume.name, 'exception': err})
+        return model_update, added_vols, removed_vols
+
+    def _delete_volumegroup(self, group):
+        model_update = {'status': fields.GroupStatus.DELETED}
+        volumegroup_name = self._get_volumegroup_name(group)
+        try:
+            self._helpers.delete_volumegroup(volumegroup_name)
+        except exception.VolumeBackendAPIException as err:
+            LOG.error("Failed to delete volume group %(volumegroup)s. "
+                      "Exception: %(exception)s.",
+                      {'volumegroup': volumegroup_name, 'exception': err})
+            model_update = {'status': fields.GroupStatus.ERROR_DELETING}
+
+        return model_update
+
+    def _update_volumegroup(self, context, group, add_volumes,
+                            remove_volumes):
+        model_update = {'status': fields.GroupStatus.AVAILABLE}
+        LOG.info("Update volume group: %(volumegroup_id)s. ",
+                 {'volumegroup_id': group.id})
+
+        volumegroup_name = self._get_volumegroup_name(group)
+        # This code block fails during remove of volumes from group
+        try:
+            volumegroup = self._helpers.get_volumegroup(volumegroup_name)
+            volumegroup_id = volumegroup["id"]
+        except Exception as ex:
+            if len(add_volumes) > 0:
+                LOG.exception("Unable to retrieve volume group "
+                              "information. Failed with exception "
+                              "%(ex)s", ex)
+        if not volumegroup and len(add_volumes) > 0:
+            LOG.error("Failed to update group: %(volumegroup)s does not "
+                      "exist in backend.",
+                      {'volumegroup': volumegroup_name})
+            model_update['status'] = fields.GroupStatus.ERROR
+            return model_update, None, None
+
+        # Add volume(s) to the volume group
+        added_vols = []
+        for volume in add_volumes:
+            vol_name = volume.name
+            try:
+                self._helpers.add_vdisk_to_volumegroup(vol_name,
+                                                       volumegroup_id)
+                added_vols.append({'id': volume.id,
+                                   'group_id': group.id})
+                self._update_volumegroup_properties(context, volume, group)
+            except exception.VolumeBackendAPIException as err:
+                model_update['status'] = fields.GroupStatus.ERROR
+                LOG.error("Failed to add the volume %(vol)s to "
+                          "group. Exception: %(exception)s.",
+                          {'vol': volume.name, 'exception': err})
+
+        # Remove volume(s) from the volume group
+        removed_vols = []
+        for volume in remove_volumes:
+            vol_name = volume.name
+            try:
+                self._helpers.remove_vdisk_from_volumegroup(vol_name)
+                removed_vols.append({'id': volume.id,
+                                     'group_id': None})
+                self._update_volumegroup_properties(context, volume)
+            except exception.VolumeBackendAPIException as err:
+                model_update['status'] = fields.GroupStatus.ERROR
+                LOG.error("Failed to remove the volume %(vol)s from "
+                          "group. Exception: %(exception)s.",
+                          {'vol': volume.name, 'exception': err})
+
         return model_update, added_vols, removed_vols
 
     def _delete_hyperswap_grp(self, group, volumes):
