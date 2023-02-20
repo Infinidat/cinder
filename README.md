@@ -119,7 +119,6 @@ Create the environment file "cinder-infinidat-config.yaml" with below parameters
 ```
 parameter_defaults:
   CinderEnableIscsiBackend: false
-  NovaLibvirtVolumeUseMultipath: true
   ControllerExtraConfig:
     cinder::config::cinder_config:
       infinidat-iscsi1/volume_driver:
