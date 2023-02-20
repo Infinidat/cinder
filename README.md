@@ -33,9 +33,9 @@ The custom Cinder container image contains following packages:
 
 To use Infinidat Infinibox as a block storage back end, cinder-volume container should be deployed.
 
-Procedure
+Procedure:    
 
-Generate a default environment file that prepares images using your Satellite server as a source.
+Generate a default environment file that prepares images using your Satellite server as a source.    
 Refer to an official RedHat OpenStack 16.2 deployment guide (Chapter: [3.16. Preparing a Satellite server for container images](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/director_installation_and_usage/assembly_preparing-for-director-installation#proc_preparing-a-satellite-server-for-container-images_preparing-for-director-installation)) point 9
 
 Edit the "containers-prepare-parameter.yaml" file.
