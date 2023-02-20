@@ -6,9 +6,6 @@ parameter_defaults:
   # Disable all other types of cinder backends to deploy Infinidat iSCSI backend.
   CinderEnableIscsiBackend: false
 
-  # Enable and configure multipath
-  NovaLibvirtVolumeUseMultipath: true
-
   # Extra backends configuration
   ControllerExtraConfig:
     cinder::config::cinder_config:
