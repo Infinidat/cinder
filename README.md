@@ -169,9 +169,7 @@ Check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com
 
 For further details of Infinidat Infinibox storage cinder driver configuration, refer to an official OpenStack documentation [Chapter: INFINIDAT InfiniBox Block Storage driver](https://docs.openstack.org/cinder/train/configuration/block-storage/drivers/infinidat-volume-driver.html)
 
-> Note: Infinidat recommends you to use Infinidat specific multipath.conf instead of generic one.
-
-> Note: RedHat OpenStack Platform 16.2 supports configuring only limited set of options for multipath.conf.    
+> Note: RedHat OpenStack Platform 16.2 supports configuring set of options for multipath.conf.
 > For further details refer to [RedHat OpenStack Platform 16.2 Storage Guide. Chapter: 2.12.1.1. Multipath heat template parameters](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/storage_guide/assembly-configuring-the-block-storage-service_osp-storage-guide#ref_multipath-heat-template-parameters_configuring-cinder).    
 > Follow the [RedHat OpenStack Platform 16.2 Storage Guide. Chapter: 2.12 Multipath configuration](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/storage_guide/assembly-configuring-the-block-storage-service_osp-storage-guide#con-multipath-configuration_configuring-cinder) to specify and deploy custom multipath.conf.
 
