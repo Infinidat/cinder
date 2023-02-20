@@ -94,8 +94,8 @@ parameter_defaults:
         ...
 ```
 
-Configure the authentication for the redhat registires at the ContainerImageRegistryCredentials parameter:
-Refer to Refer to an official RedHat OpenStack 16.2 deployment guide (Chapter: [3.9. Obtaining container images from private registries](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/director_installation_and_usage/assembly_preparing-for-director-installation#ref_obtaining-container-images-from-private-registries_preparing-for-director-installation))
+Configure the authentication for the redhat registries at the ContainerImageRegistryCredentials parameter:    
+Refer to an official RedHat OpenStack 16.2 deployment guide (Chapter: [3.9. Obtaining container images from private registries](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/director_installation_and_usage/assembly_preparing-for-director-installation#ref_obtaining-container-images-from-private-registries_preparing-for-director-installation))
 
 Use the "containers-prepare-parameter.yaml" file with any deployment commands, such as as openstack overcloud deploy:
 
