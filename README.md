@@ -57,7 +57,7 @@ parameter_defaults:
       tag_from_label: "{version}-{release}"
 ```
 
-Check the [example "containers-prepare-parameter.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) from our repository.
+Check the example ["containers-prepare-parameter.yaml"](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) file from our repository.
 
 Add a new strategy to the ContainerImagePrepare parameter that includes the replacement container image for the Infinidat Infinibox cinder plugin:
 
@@ -75,7 +75,7 @@ parameter_defaults:
         tag: 16.2
         ...
 ```
-Check the [example "containers-prepare-parameter.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) from our repository.
+Check the example ["containers-prepare-parameter.yaml"](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) file from our repository.
 
 > Note: It is possible to specify minor version in the tag to deploy specific supported releae. Example: 16.2.5
 
@@ -161,8 +161,8 @@ parameter_defaults:
 
 ```
 
-For the iSCSI backend, check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.    
-For the FC backend, check the [example "cinder-infinidat-config-fc.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-fc.yaml) from our repository.    
+For the iSCSI backend, check the example ["cinder-infinidat-config-iscsi.yaml"](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) file from our repository.    
+For the FC backend, check the example ["cinder-infinidat-config-fc.yaml"](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-fc.yaml) file from our repository.    
 
 #### Additional Help
 
