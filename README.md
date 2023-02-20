@@ -163,7 +163,8 @@ parameter_defaults:
 
 ```
 
-Check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.
+For the iSCSI backend, check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.
+For the FC backend, check the [example "cinder-infinidat-config-fc.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-fc.yaml) from our repository.
 
 #### Additional Help
 
