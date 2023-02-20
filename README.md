@@ -21,7 +21,7 @@ The custom Cinder container image contains following packages:
 
 ## Prerequisites
 
-* Red Hat OpenStack Platform 16.2 with RedHat Enterprise Linux 8.2.
+* Red Hat OpenStack Platform 16.2 with RedHat Enterprise Linux 8.4.
 
 * Infinidat Infinibox storage 4.0 or higher.
 
@@ -72,10 +72,27 @@ parameter_defaults:
         namespace: registry.connect.redhat.com/infinidat
         name_prefix: openstack-
         name_suffix: -infinidat-plugin
-        tag: latest
+        tag: 16.2
         ...
 ```
 Check the [example "containers-prepare-parameter.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/containers-prepare-parameter.yaml) from our repository.
+
+> Note: It is possible to specify minor version in the tag to deploy specific supported releae. Example: 16.2.5
+
+```
+parameter_defaults:
+  ContainerImagePrepare:
+    ...
+    - push_destination: true
+      includes:
+        - cinder-volume
+      set:
+        namespace: registry.connect.redhat.com/infinidat
+        name_prefix: openstack-
+        name_suffix: -infinidat-plugin
+        tag: 16.2.5
+        ...
+```
 
 Configure the authentication for the redhat registires at the ContainerImageRegistryCredentials parameter:
 Refer to Refer to an official RedHat OpenStack 16.2 deployment guide (Chapter: [3.9. Obtaining container images from private registries](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/director_installation_and_usage/assembly_preparing-for-director-installation#ref_obtaining-container-images-from-private-registries_preparing-for-director-installation))
@@ -102,14 +119,7 @@ Create the environment file "cinder-infinidat-config.yaml" with below parameters
 ```
 parameter_defaults:
   CinderEnableIscsiBackend: false
-  CinderEnableRbdBackend: false
-  CinderEnableNfsBackend: false
-  NovaEnableRbdBackend: false
-  CinderDefaultVolumeType: infinidat-iscsi1
-  CinderRpcResponseTimeout: 180
   NovaLibvirtVolumeUseMultipath: true
-  MultipathdEnable: true
-  MultipathdCustomConfigFile: /var/lib/mistral/multipath.conf
   ControllerExtraConfig:
     cinder::config::cinder_config:
       infinidat-iscsi1/volume_driver:
@@ -124,22 +134,34 @@ parameter_defaults:
         value: your_san_password
       infinidat-iscsi1/san_thin_provision:
         value: true
-      infinidat-iscsi1/driver_use_ssl:
-        value: true
-      infinidat-iscsi1/suppress_requests_ssl_warnings:
-        value: true
       infinidat-iscsi1/infinidat_pool_name:
         value: rhsop_cinder_pool1
       infinidat-iscsi1/infinidat_storage_protocol:
         value: iscsi
       infinidat-iscsi1/infinidat_iscsi_netspaces:
         value: default_iscsi_space
-      infinidat-iscsi1/san_thin_provision:
+
+      infinidat-fc1/volume_driver:
+        value: cinder.volume.drivers.infinidat.InfiniboxVolumeDriver
+      infinidat-fc1/volume_backend_name:
+        value: infinidat-fc1
+      infinidat-fc1/san_ip:
+        value: infinibox.domain.com
+      infinidat-fc1/san_login:
+        value: censored
+      infinidat-fc1/san_password:
+        value: censored
+      infinidat-fc1/infinidat_pool_name:
+        value: rhsop_cinder_pool1
+      infinidat-fc1/infinidat_storage_protocol:
+        value: fc
+      infinidat-fc1/san_thin_provision:
         value: true
-      infinidat-iscsi1/use_multipath_for_image_xfer:
-        value: true
-      infinidat-iscsi1/image_volume_cache_enabled:
-        value: false
+
+    cinder_user_enabled_backends:
+    - infinidat-iscsi1
+    - infinidat-fc1
+
 ```
 
 Check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.
@@ -181,43 +203,144 @@ openstack overcloud deploy --templates \
 
 ### 3.	Verify the configured changes
 
-3.1	SSH to controller node from undercloud and check the docker process for cinder-volume
+3.1.    Source the overcloudrc file
 ```
-(overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman ps | grep cinder
-e7192ba6663c  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-api:16.2                  kolla_start           3 weeks ago   Up 27 hours ago                cinder_api
-4b2b34c038c0  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-api:16.2                  kolla_start           3 weeks ago   Up 27 hours ago                cinder_api_cron
-b8e45cae61fb  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-scheduler:16.2            kolla_start           3 weeks ago   Up 27 hours ago                cinder_scheduler
-54cc3b7449fa  rhosp-director-ng.ctlplane.localdomain:8787/rhosp-rhel8/openstack-cinder-backup:16.2               kolla_start           3 weeks ago   Up 27 hours ago                cinder_backup
-dc20a77daeee  cluster.common.tag/openstack-cinder-volume-infinidat-plugin:pcmklatest                             /bin/bash /usr/lo...  26 hours ago  Up 26 hours ago                openstack-cinder-volume-podman-0
+[stack@rhosp-director ~]$ source overcloudrc
 ```
 
-3.2.	Verify that the infinisdk python library is present in the cinder-volume container
+3.2.    Check cinder volume services are up and running
 ```
-(overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman exec -it openstack-cinder-volume-podman-0 pip freeze | grep -i infinisdk
-infinisdk==206.1.2
+(overcloud) [stack@rhosp-director ~]$ openstack volume service list --long
++------------------+----------------------------+------+---------+-------+----------------------------+-----------------+
+| Binary           | Host                       | Zone | Status  | State | Updated At                 | Disabled Reason |
++------------------+----------------------------+------+---------+-------+----------------------------+-----------------+
+| cinder-scheduler | overcloud-controller-0     | nova | enabled | up    | 2022-12-20T14:45:15.000000 | None            |
+| cinder-backup    | overcloud-controller-0     | nova | enabled | up    | 2022-12-20T14:45:17.000000 | None            |
+| cinder-volume    | hostgroup@infinidat-iscsi1 | nova | enabled | up    | 2022-12-20T14:45:18.000000 | None            |
+| cinder-volume    | hostgroup@infinidat-fc1    | nova | enabled | up    | 2022-12-20T14:45:14.000000 | None            |
++------------------+----------------------------+------+---------+-------+----------------------------+-----------------+
 ```
 
-3.3.	Verify that the backend details are visible in ```/etc/cinder/cinder.conf``` in the cinder-volume container
-
-Given below is an example of iSCSI backend details.
-
+3.3.	Check cinder volume types are present
 ```
-(overcloud) [heat-admin@overcloud-controller-0 ~]$ sudo podman exec -it openstack-cinder-volume-podman-0 tail -20 /etc/cinder/cinder.conf
-...
+(overcloud) [stack@rhosp-director ~]$ openstack volume type list --long
++--------------------------------------+------------------+-----------+-----------------------------------------------------------------+----------------------------------------+
+| ID                                   | Name             | Is Public | Description                                                     | Properties                             |
++--------------------------------------+------------------+-----------+-----------------------------------------------------------------+----------------------------------------+
+| 272a5f3c-780b-468d-94bf-fdcdf618a905 | infinidat-fc1    | True      | Multibackend volume type 2                                      | volume_backend_name='infinidat-fc1'    |
+| f116ed45-8a8e-4e43-980a-dfa865618d16 | infinidat-iscsi1 | True      | Multibackend volume type 1                                      | volume_backend_name='infinidat-iscsi1' |
+| 53736d5f-3731-420a-9291-0029eba553b3 | __DEFAULT__      | True      | For internal use, 'infinidat-iscsi1' is the default volume type |                                        |
++--------------------------------------+------------------+-----------+-----------------------------------------------------------------+----------------------------------------+
+```
 
-[infinidat-iscsi1]
-driver_use_ssl=True
-image_volume_cache_enabled=False
-infinidat_iscsi_netspaces=default_iscsi_space
-infinidat_pool_name=rhsop_cinder_pool1
-infinidat_storage_protocol=iscsi
-san_ip=infinibox.domain.com
-san_login=your_san_login
-san_password=your_san_password
-san_thin_provision=True
-suppress_requests_ssl_warnings=True
-use_multipath_for_image_xfer=True
-volume_backend_name=infinidat-iscsi1
-volume_driver=cinder.volume.drivers.infinidat.InfiniboxVolumeDriver
-backend_host=hostgroup
+3.4.	Verify the functionality by creating volumes and ensuring available status
+```
+(overcloud) [stack@rhosp-director ~]$ openstack volume create --size 1 test-iscsi1
++---------------------+--------------------------------------+
+| Field               | Value                                |
++---------------------+--------------------------------------+
+| attachments         | []                                   |
+| availability_zone   | nova                                 |
+| bootable            | false                                |
+| consistencygroup_id | None                                 |
+| created_at          | 2022-12-20T14:53:45.652967           |
+| description         | None                                 |
+| encrypted           | False                                |
+| id                  | 70a28828-a929-484b-87e9-6d2648b8dc18 |
+| migration_status    | None                                 |
+| multiattach         | False                                |
+| name                | test-iscsi1                          |
+| properties          |                                      |
+| replication_status  | None                                 |
+| size                | 1                                    |
+| snapshot_id         | None                                 |
+| source_volid        | None                                 |
+| status              | creating                             |
+| type                | infinidat-iscsi1                     |
+| updated_at          | None                                 |
+| user_id             | d1424b1b80284108b4016379019c96f1     |
++---------------------+--------------------------------------+
+(overcloud) [stack@rhosp-director ~]$ openstack volume show test-iscsi1
++--------------------------------+--------------------------------------+
+| Field                          | Value                                |
++--------------------------------+--------------------------------------+
+| attachments                    | []                                   |
+| availability_zone              | nova                                 |
+| bootable                       | false                                |
+| consistencygroup_id            | None                                 |
+| created_at                     | 2022-12-20T14:53:45.000000           |
+| description                    | None                                 |
+| encrypted                      | False                                |
+| id                             | 70a28828-a929-484b-87e9-6d2648b8dc18 |
+| migration_status               | None                                 |
+| multiattach                    | False                                |
+| name                           | test-iscsi1                          |
+| os-vol-host-attr:host          | None                                 |
+| os-vol-mig-status-attr:migstat | None                                 |
+| os-vol-mig-status-attr:name_id | None                                 |
+| os-vol-tenant-attr:tenant_id   | cd5d04a84f93499daa7b01df850724f0     |
+| properties                     |                                      |
+| replication_status             | None                                 |
+| size                           | 1                                    |
+| snapshot_id                    | None                                 |
+| source_volid                   | None                                 |
+| status                         | available                            |
+| type                           | infinidat-iscsi1                     |
+| updated_at                     | 2022-12-20T14:53:47.000000           |
+| user_id                        | d1424b1b80284108b4016379019c96f1     |
++--------------------------------+--------------------------------------+
+(overcloud) [stack@rhosp-director ~]$ openstack volume create --size 1 --type infinidat-fc1 test-fc1
++---------------------+--------------------------------------+
+| Field               | Value                                |
++---------------------+--------------------------------------+
+| attachments         | []                                   |
+| availability_zone   | nova                                 |
+| bootable            | false                                |
+| consistencygroup_id | None                                 |
+| created_at          | 2022-12-20T14:54:15.133001           |
+| description         | None                                 |
+| encrypted           | False                                |
+| id                  | cd6e8f2a-14f6-4dfb-a270-34150b9498a4 |
+| migration_status    | None                                 |
+| multiattach         | False                                |
+| name                | test-fc1                             |
+| properties          |                                      |
+| replication_status  | None                                 |
+| size                | 1                                    |
+| snapshot_id         | None                                 |
+| source_volid        | None                                 |
+| status              | creating                             |
+| type                | infinidat-fc1                        |
+| updated_at          | None                                 |
+| user_id             | d1424b1b80284108b4016379019c96f1     |
++---------------------+--------------------------------------+
+(overcloud) [stack@rhosp-director ~]$ openstack volume show test-fc1
++--------------------------------+--------------------------------------+
+| Field                          | Value                                |
++--------------------------------+--------------------------------------+
+| attachments                    | []                                   |
+| availability_zone              | nova                                 |
+| bootable                       | false                                |
+| consistencygroup_id            | None                                 |
+| created_at                     | 2022-12-20T14:54:15.000000           |
+| description                    | None                                 |
+| encrypted                      | False                                |
+| id                             | cd6e8f2a-14f6-4dfb-a270-34150b9498a4 |
+| migration_status               | None                                 |
+| multiattach                    | False                                |
+| name                           | test-fc1                             |
+| os-vol-host-attr:host          | None                                 |
+| os-vol-mig-status-attr:migstat | None                                 |
+| os-vol-mig-status-attr:name_id | None                                 |
+| os-vol-tenant-attr:tenant_id   | cd5d04a84f93499daa7b01df850724f0     |
+| properties                     |                                      |
+| replication_status             | None                                 |
+| size                           | 1                                    |
+| snapshot_id                    | None                                 |
+| source_volid                   | None                                 |
+| status                         | available                            |
+| type                           | infinidat-fc1                        |
+| updated_at                     | 2022-12-20T14:54:17.000000           |
+| user_id                        | d1424b1b80284108b4016379019c96f1     |
++--------------------------------+--------------------------------------+
 ```

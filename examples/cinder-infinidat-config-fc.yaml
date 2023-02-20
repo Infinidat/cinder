@@ -1,0 +1,73 @@
+# For the opnstack cinder general configuration refer to RedHat OpenStack Platform 16.2 Overcloud Parameters
+# For the driver configuration refer to Openstack Cinder Configuration For Infinidat Driver
+
+parameter_defaults:
+
+  # Disable all other types of cinder backends to deploy Infinidat iSCSI backend.
+  CinderEnableIscsiBackend: false
+  NovaLibvirtVolumeUseMultipath: true
+
+  # Extra backends configuration
+  ControllerExtraConfig:
+    cinder::config::cinder_config:
+
+      # Configure first backend
+
+      # Enable Infinibox cinder driver for it
+      infinidat-fc1/volume_driver:
+        value: cinder.volume.drivers.infinidat.InfiniboxVolumeDriver
+
+      # Specify the name for the backend.
+      infinidat-fc1/volume_backend_name:
+        value: infinidat-fc1
+
+      # Specify the address and credentials
+      infinidat-fc1/san_ip:
+        value: infinibox.domain.com
+      infinidat-fc1/san_login:
+        value: censored
+      infinidat-fc1/san_password:
+        value: censored
+
+      # Configure fc driver type specific options
+      infinidat-fc1/infinidat_pool_name:
+        value: rhsop_cinder_pool1
+      infinidat-fc1/infinidat_storage_protocol:
+        value: fc
+
+      # Enable thin provisioning feature
+      infinidat-fc1/san_thin_provision:
+        value: true
+
+      # Configure second backend
+
+      # Enable Infinibox cinder driver for it
+      infinidat-fc2/volume_driver:
+        value: cinder.volume.drivers.infinidat.InfiniboxVolumeDriver
+
+      # Specify the name for the backend.
+      infinidat-fc2/volume_backend_name:
+        value: infinidat-fc2
+
+      # Specify the address and credentials
+      infinidat-fc2/san_ip:
+        value: infinibox.domain.com
+      infinidat-fc2/san_login:
+        value: censored
+      infinidat-fc2/san_password:
+        value: censored
+
+      # Configure fc driver type specific options
+      infinidat-fc2/infinidat_pool_name:
+        value: rhsop_cinder_pool2
+      infinidat-fc2/infinidat_storage_protocol:
+        value: fc
+
+      # Enable thin provisioning feature
+      infinidat-fc2/san_thin_provision:
+        value: true
+
+    # Specify all the backends you want to enable
+    cinder_user_enabled_backends:
+    - infinidat-fc1
+    - infinidat-fc2

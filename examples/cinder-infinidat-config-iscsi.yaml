@@ -5,24 +5,13 @@ parameter_defaults:
 
   # Disable all other types of cinder backends to deploy Infinidat iSCSI backend.
   CinderEnableIscsiBackend: false
-  CinderEnableRbdBackend: false
-  CinderEnableNfsBackend: false
-  NovaEnableRbdBackend: false
-
-  # Specify defailt volume type for multibackend deployments
-  CinderDefaultVolumeType: infinidat-iscsi1
-
-  CinderRpcResponseTimeout: 180
 
   # Enable and configure multipath
   NovaLibvirtVolumeUseMultipath: true
-  MultipathdEnable: true
-  MultipathdCustomConfigFile: /var/lib/mistral/multipath.conf
 
   # Extra backends configuration
   ControllerExtraConfig:
     cinder::config::cinder_config:
-
 
       # Configure first backend
 
@@ -57,17 +46,9 @@ parameter_defaults:
       infinidat-iscsi1/infinidat_iscsi_netspaces:
         value: default_iscsi_space
 
-      # Enable thin provisionning feature
+      # Enable thin provisioning feature
       infinidat-iscsi1/san_thin_provision:
         value: true
-
-      # Configure cinder specific options for the backend
-      infinidat-iscsi1/use_multipath_for_image_xfer:
-        value: true
-      infinidat-iscsi1/image_volume_cache_enabled:
-        value: false
-
-
 
       # Configure second backend
 
@@ -102,15 +83,9 @@ parameter_defaults:
       infinidat-iscsi2/infinidat_iscsi_netspaces:
         value: default_iscsi_space
 
-      # Enable thin provisionning feature
+      # Enable thin provisioning feature
       infinidat-iscsi2/san_thin_provision:
         value: true
-
-      # Configure cinder specific options for the backend
-      infinidat-iscsi2/use_multipath_for_image_xfer:
-        value: true
-      infinidat-iscsi2/image_volume_cache_enabled:
-        value: false
 
     # Specify all the backends you want to enable
     cinder_user_enabled_backends:
