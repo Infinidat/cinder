@@ -221,7 +221,15 @@ openstack overcloud deploy --templates \
 +------------------+----------------------------+------+---------+-------+----------------------------+-----------------+
 ```
 
-3.3.	Check cinder volume types are present
+3.3.	Create necessary volume types for deployed backends
+```
+(overcloud) [stack@rhosp-director ~]$ openstack volume type create --public infinidat-iscsi1
+(overcloud) [stack@rhosp-director ~]$ openstack volume type create --public infinidat-fc1
+(overcloud) [stack@rhosp-director ~]$ openstack volume type set --name infinidat-iscsi1 --description "Multibackend volume type 1" --property volume_backend_name="infinidat-iscsi1" infinidat-iscsi1
+(overcloud) [stack@rhosp-director ~]$ openstack volume type set --name infinidat-fc1 --description "Multibackend volume type 2" --property volume_backend_name="infinidat-fc1" infinidat-fc1
+```
+
+3.4.	Check cinder volume types are present
 ```
 (overcloud) [stack@rhosp-director ~]$ openstack volume type list --long
 +--------------------------------------+------------------+-----------+-----------------------------------------------------------------+----------------------------------------+
@@ -229,11 +237,11 @@ openstack overcloud deploy --templates \
 +--------------------------------------+------------------+-----------+-----------------------------------------------------------------+----------------------------------------+
 | 272a5f3c-780b-468d-94bf-fdcdf618a905 | infinidat-fc1    | True      | Multibackend volume type 2                                      | volume_backend_name='infinidat-fc1'    |
 | f116ed45-8a8e-4e43-980a-dfa865618d16 | infinidat-iscsi1 | True      | Multibackend volume type 1                                      | volume_backend_name='infinidat-iscsi1' |
-| 53736d5f-3731-420a-9291-0029eba553b3 | __DEFAULT__      | True      | For internal use, 'infinidat-iscsi1' is the default volume type |                                        |
+| 53736d5f-3731-420a-9291-0029eba553b3 | __DEFAULT__      | True      | For internal use, 'tripleo'          is the default volume type |                                        |
 +--------------------------------------+------------------+-----------+-----------------------------------------------------------------+----------------------------------------+
 ```
 
-3.4.	Verify the functionality by creating volumes and ensuring available status
+3.5.	Verify the functionality by creating volumes and ensuring available status
 ```
 (overcloud) [stack@rhosp-director ~]$ openstack volume create --size 1 test-iscsi1
 +---------------------+--------------------------------------+
