@@ -110,8 +110,6 @@ When director deploys the overcloud, the overcloud uses the Infinidat cinder con
 
 #### 1.2 Environment File for cinder backend
 
-> Note: Only iSCSI backend is currently officially supported. FC backend has not yet passed the certification for the RedHat OpenStack Platform 16.2
-
 The Infindiat Infinibox environment file for RedHat OpenStack Platform contains the settings for each backend you want to define.
 
 Create the environment file "cinder-infinidat-config.yaml" with below parameters and other backend details.
@@ -163,14 +161,14 @@ parameter_defaults:
 
 ```
 
-For the iSCSI backend, check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.
-For the FC backend, check the [example "cinder-infinidat-config-fc.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-fc.yaml) from our repository.
+For the iSCSI backend, check the [example "cinder-infinidat-config-iscsi.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-iscsi.yaml) from our repository.    
+For the FC backend, check the [example "cinder-infinidat-config-fc.yaml" file](https://github.com/Infinidat/cinder/blob/doc/rhosp16.2/examples/cinder-infinidat-config-fc.yaml) from our repository.    
 
 #### Additional Help
 
 For further details of Infinidat Infinibox storage cinder driver configuration, refer to an official OpenStack documentation [Chapter: INFINIDAT InfiniBox Block Storage driver](https://docs.openstack.org/cinder/train/configuration/block-storage/drivers/infinidat-volume-driver.html)
 
-> Note: RedHat OpenStack Platform 16.2 supports configuring set of options for multipath.conf.
+> Note: RedHat OpenStack Platform 16.2 supports configuring set of options for multipath.conf.    
 > For further details refer to [RedHat OpenStack Platform 16.2 Storage Guide. Chapter: 2.12.1.1. Multipath heat template parameters](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/storage_guide/assembly-configuring-the-block-storage-service_osp-storage-guide#ref_multipath-heat-template-parameters_configuring-cinder).    
 > Follow the [RedHat OpenStack Platform 16.2 Storage Guide. Chapter: 2.12 Multipath configuration](https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/storage_guide/assembly-configuring-the-block-storage-service_osp-storage-guide#con-multipath-configuration_configuring-cinder) to specify and deploy custom multipath.conf.
 
