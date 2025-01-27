@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    Infinidat driver: Added support for snapshot promote feature.
+    The snapshot promotion feature, now available for the Infinidat
+    storage software, provides a very efficient method for creating
+    independent volumes from existing snapshots or volumes with
+    minimal overhead (no data copying required, resulting in lower
+    resource consumption and faster performance).

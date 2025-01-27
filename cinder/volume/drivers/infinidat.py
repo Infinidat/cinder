@@ -25,6 +25,7 @@ import uuid
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import units
+from packaging import version as pkg_version
 
 from cinder.common import constants
 from cinder import context as cinder_context
@@ -132,10 +133,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.13 - fixed consistency groups feature
         1.14 - added storage assisted volume migration
         1.15 - fixed backup for attached volume
+        1.16 - added support for snapshot promotion
 
     """
 
-    VERSION = '1.15'
+    VERSION = '1.16'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "INFINIDAT_CI"
@@ -171,9 +173,16 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
     def do_setup(self, context):
         """Driver initialization"""
         if infinisdk is None:
-            msg = _("Missing 'infinisdk' python module, ensure the library"
-                    " is installed and available.")
-            raise exception.VolumeDriverException(message=msg)
+            message = _('The infinisdk Python library is not available, '
+                        'please install it with: pip3 install infinisdk')
+            raise exception.VolumeDriverException(message=message)
+        version = infinisdk.core.utils.environment.get_infinisdk_version()
+        if pkg_version.parse(version) < pkg_version.parse('250.0.0'):
+            message = (_('The installed version of the infinisdk Python '
+                         'library is out of date: %(version)s, please '
+                         'update it with: pip3 install -U infinisdk')
+                       % {'version': version})
+            raise exception.VolumeDriverException(message=message)
         auth = (self.configuration.san_login,
                 self.configuration.san_password)
         use_ssl = self.configuration.driver_use_ssl
@@ -724,12 +733,30 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             with self._attach_context(connection) as attach_info:
                 yield attach_info
 
-    @infinisdk_to_cinder_exceptions
-    def create_volume_from_snapshot(self, volume, snapshot):
-        """Create volume from snapshot.
+    def _create_promoted_clone(self, volume, infinidat_parent):
+        name = self._make_volume_name(volume)
+        LOG.debug('Creating cloned volume %s from %s',
+                  name, infinidat_parent.get_name())
+        infinidat_volume = infinidat_parent.create_snapshot(
+            name=name, write_protected=False)
+        LOG.debug('Promote cloned volume %s', name)
+        infinidat_volume.promote_snapshot()
+        volume_size = infinidat_volume.get_size()
+        if volume_size < volume.size * capacity.GiB:
+            self.extend_volume(volume, volume.size)
+        self._set_qos(volume, infinidat_volume)
+        self._set_cinder_object_metadata(infinidat_volume, volume)
+        if volume.group_id:
+            group = volume_utils.group_get_by_id(volume.group_id)
+            if volume_utils.is_group_a_cg_snapshot_type(group):
+                infinidat_group = self._get_infinidat_cg(group)
+                infinidat_group.add_member(infinidat_volume)
 
-        InfiniBox does not yet support detached clone so use dd to copy data.
-        This could be a lengthy operation.
+    def _create_copy_from_snapshot(self, volume, snapshot):
+        """Create a generic clone from a snapshot.
+
+        Old versions of InfiniBox do not support detached clones,
+        so we use dd to copy data. This can be a slow operation:
 
         - create destination volume
         - map source snapshot and destination volume
@@ -752,6 +779,15 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             raise
 
     @infinisdk_to_cinder_exceptions
+    def create_volume_from_snapshot(self, volume, snapshot):
+        """Creates a volume from a snapshot."""
+        if self._system.compat.has_promote_snapshot():
+            infinidat_snapshot = self._get_infinidat_snapshot(snapshot)
+            self._create_promoted_clone(volume, infinidat_snapshot)
+        else:
+            self._create_copy_from_snapshot(volume, snapshot)
+
+    @infinisdk_to_cinder_exceptions
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
         try:
@@ -760,12 +796,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             return
         snapshot.safe_delete()
 
-    @infinisdk_to_cinder_exceptions
-    def create_cloned_volume(self, volume, src_vref):
-        """Create a clone from source volume.
+    def _create_copy_from_volume(self, volume, src_vref):
+        """Create a generic clone from a volume.
 
-        InfiniBox does not yet support detached clone so use dd to copy data.
-        This could be a lengthy operation.
+        Old versions of InfiniBox do not support detached clones,
+        so we use dd to copy data. This can be a slow operation:
 
         * create temporary snapshot from source volume
         * map temporary snapshot
@@ -782,9 +817,18 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                             volume=src_vref)
         try:
             self.create_snapshot(snapshot)
-            self.create_volume_from_snapshot(volume, snapshot)
+            self._create_copy_from_snapshot(volume, snapshot)
         finally:
             self.delete_snapshot(snapshot)
+
+    @infinisdk_to_cinder_exceptions
+    def create_cloned_volume(self, volume, src_vref):
+        """Creates a clone of the specified volume."""
+        if self._system.compat.has_promote_snapshot():
+            infinidat_volume = self._get_infinidat_volume(src_vref)
+            self._create_promoted_clone(volume, infinidat_volume)
+        else:
+            self._create_copy_from_volume(volume, src_vref)
 
     def _build_initiator_target_map(self, connector, all_target_wwns):
         """Build the target_wwns and the initiator target map."""
