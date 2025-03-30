@@ -28,6 +28,10 @@ Supported operations
 * Attach a volume to multiple instances at once (multi-attach).
 * Host and storage assisted volume migration.
 * Efficient non-disruptive volume backup.
+* Replicate volumes and consistency groups to remote Infinidat storage(s).
+* Enable and disable replication for a volume group.
+* List or replication targets for a volume group.
+* Failover host to replicated backends.
 
 External package installation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -37,7 +41,7 @@ InfiniBox systems. Install the package from PyPI using the following command:
 
 .. code-block:: console
 
-   $ pip install infinisdk
+   $ pip3 install infinisdk
 
 Setting up the storage array
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -196,19 +200,144 @@ Configure the driver back-end section with the parameters below.
   created volumes to inherit their compression setting from their parent
   pool at creation time. The default value is unset.
 
-After modifying the ``cinder.conf`` file, restart the ``cinder-volume``
-service.
+* Replication
 
-Create a new volume type for each distinct ``volume_backend_name`` value
-that you added in the ``cinder.conf`` file. The example below assumes that
-the same ``volume_backend_name=infinidat-pool-a`` option was specified in
-all of the entries, and specifies that the volume type ``infinidat`` can be
-used to allocate volumes from any of them. Example of creating a volume type:
+  Add the ``replication_device`` configuration option to the storage
+  backend configuration to specify another InfiniBox storage host to
+  replicate volumes and consistency groups to:
+
+  .. code-block:: ini
+
+     replication_device = backend_id:infinidat-pool-b,
+                          san_ip:10.4.5.6,
+                          pool_name:pool-b,
+                          replication_type:active_active,
+                          uniform_access:true,
+                          alua_optimized:true
+
+     replication_device = backend_id:infinidat-pool-c,
+                          san_ip:10.7.8.9,
+                          pool_name:pool-c,
+                          replication_type:active_active,
+                          uniform_access:true,
+                          alua_optimized:false
+
+  Where ``backend_id`` is the unique identifier of the remote InfiniBox
+  storage host, ``san_ip`` is the management IP address of the remote
+  InfiniBox storage host, ``san_login`` and ``san_password`` are the
+  credentials to access the remote InfiniBox storage host. ``pool_name``
+  is the storage pool will contain replicated volumes and groups.
+  The ``uniform_access`` option enables a uniform topology, and the
+  OpenStack hosts are connected to both InfiniBox storage hosts, and the
+  volumes are mapped to the OpenStack hosts on both InfiniBox storage hosts.
+  In this topology, the OpenStack host can perform I/Os on both InfiniBox
+  storage hosts simultaneously. The ``alua_optimized`` option controls SCSI
+  Asymmetric Logical Unit Access (ALUA).
+
+  .. list-table:: Available replication configuration options
+     :header-rows: 1
+
+     * - Option
+       - Type
+       - Default
+       - Description
+     * - ``backend_id``
+       - ``String``
+       - ``None``
+       - Unique identifier of the remote InfiniBox storage host
+     * - ``san_ip``
+       - ``String``
+       - ``None``
+       - Management IP address or FQDN for the remote Infinidat storage host
+     * - ``san_login``
+       - ``String``
+       - Inherited from local storage backend
+       - Username to access the remote Infinidat storage host
+     * - ``san_password``
+       - ``String``
+       - Inherited from local storage backend
+       - The user password to access the remote Infinidat storage host
+     * - ``use_ssl``
+       - ``Boolean``
+       - Inherited from local storage backend
+       - Use SSL/TLS for API on the remote Infinidat storage host
+     * - ``pool_name``
+       - ``String``
+       - Inherited from local storage backend
+       - A storage pool name in the remote Infinidat storage host
+     * - ``replication_type``
+       - ``String``
+       - ``active_active``
+       - Replication type, currently only ``active_active`` replication is supported
+     * - ``uniform_access``
+       - ``Boolean``
+       - ``True``
+       - Enables uniform access for all replicated volumes
+     * - ``alua_optimized``
+       - ``Boolean``
+       - ``True``
+       - Enables ALUA optimized paths for all replicated volumes
+
+  A volume is only replicated if the volume is of a volume-type that
+  contains the extra specs ``replication_enabled`` set to ``<is> True``
+  and ``infinidat:replication_backend`` set to the valid replication
+  backend id.
+
+  To create a volume type that enables replication to remote InfiniBox
+  storage host:
 
   .. code-block:: console
 
-     $ openstack volume type create infinidat
-     $ openstack volume type set --property volume_backend_name=infinidat-pool-a infinidat
+     $ openstack volume type create replicated-volume-type
+
+     $ openstack volume type set \
+         --property replication_enabled='<is> True' \
+         replicated-volume-type
+
+     $ openstack volume type set \
+         --property infinidat:replication_backend='infinidat-pool-b' \
+         replicated-volume-type
+
+  A volume group is only replicated if the group is of a group-type that
+  contains the extra specs ``group_replication_enabled`` set to ``<is> True``
+  and ``infinidat:replication_backend`` set to the valid replication
+  backend id.
+
+  To create a group type that enables replication to remote InfiniBox
+  storage host:
+
+  .. code-block:: console
+
+     $ openstack volume group type create replicated-group-type
+
+     $ openstack volume group type set \
+         --property consistent_group_snapshot_enabled='<is> True' \
+         replicated-group-type
+
+     $ openstack volume group type set \
+         --property group_replication_enabled='<is> True' \
+         replicated-group-type
+
+     $ openstack volume group type set \
+         --property infinidat:replication_backend='infinidat-pool-b' \
+         replicated-group-type
+
+* Volume types
+
+  Create a new volume type for each distinct ``volume_backend_name`` value
+  that you added in the ``cinder.conf`` file. The example below assumes that
+  the same ``volume_backend_name=infinidat-pool-a`` option was specified in
+  all of the entries, and specifies that the volume type ``infinidat`` can be
+  used to allocate volumes from any of them. Example of creating a volume type:
+
+    .. code-block:: console
+
+       $ openstack volume type create infinidat
+
+       $ openstack volume type set --property volume_backend_name=infinidat-pool-a infinidat
+
+After modifying the ``cinder.conf`` file, restart the ``cinder-volume``
+service.
 
 Configuration example
 ~~~~~~~~~~~~~~~~~~~~~
@@ -230,6 +359,12 @@ Configuration example
    infinidat_pool_name = pool-a
    infinidat_storage_protocol = iscsi
    infinidat_iscsi_netspaces = default_iscsi_space
+   replication_device = backend_id:infinidat-pool-b,
+                        san_ip:10.4.5.6,
+                        pool_name:pool-b,
+                        replication_type:active_active,
+                        uniform_access:true,
+                        alua_optimized:true
 
 Driver-specific options
 ~~~~~~~~~~~~~~~~~~~~~~~
