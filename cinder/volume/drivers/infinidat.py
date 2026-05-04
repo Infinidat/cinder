@@ -14,6 +14,7 @@
 #    under the License.
 """Infinidat InfiniBox Volume Driver."""
 
+import collections
 from contextlib import contextmanager
 import functools
 import math
@@ -74,6 +75,7 @@ VALID_REPLICATION_TYPES = (REPLICATION_ACTIVE_ACTIVE)
 SPEC_REPLICATION_BACKEND = 'infinidat:replication_backend'
 
 BACKEND_QOS_CONSUMERS = frozenset(['back-end', 'both'])
+MIN_SDK_VERSION = '250.0.0'
 QOS_MAX_IOPS = 'maxIOPS'
 QOS_MAX_BWS = 'maxBWS'
 
@@ -164,10 +166,9 @@ class Backend(object):
         replication_type = device.get('replication_type',
                                       REPLICATION_ACTIVE_ACTIVE)
         if replication_type not in VALID_REPLICATION_TYPES:
-            message = (_('Replication type %(replication_type)s is not valid, '
-                         'valid replication types: %(valid_values)s')
-                       % {'replication_type': replication_type,
-                          'valid_values': ' , '.join(VALID_REPLICATION_TYPES)})
+            option = '%s.replication_type' % config.config_group
+            raise exception.InvalidConfigurationValue(option=option,
+                                                      value=device)
         uniform_access = strutils.bool_from_string(device.get('uniform_access',
                                                               True))
         alua_optimized = strutils.bool_from_string(device.get('alua_optimized',
@@ -248,7 +249,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             'use_multipath_for_image_xfer', 'enforce_multipath_for_image_xfer',
             'num_volume_device_scan_tries', 'volume_dd_blocksize',
             'driver_use_ssl', 'suppress_requests_ssl_warnings',
-            'max_over_subscription_ratio')
+            'max_over_subscription_ratio', 'replication_device')
         return infinidat_opts + additional_opts
 
     @property
@@ -280,7 +281,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         for backend_id, backend in self.backends.items():
             if backend_id == self.active_backend_id:
                 continue
-            LOG.debug('Registering remote system %s with serial %s '
+            LOG.debug('Register remote system %s with serial %s '
                       'as a replication backend %s',
                       backend.system.get_name(),
                       backend.system.get_serial(),
@@ -290,15 +291,18 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
     def do_setup(self, context):
         """Driver initialization"""
         if infinisdk is None:
-            message = _('The infinisdk Python library is not available, '
-                        'please install it with: pip3 install infinisdk')
+            message = (_('The infinisdk Python library is required but not '
+                         'installed, please install it with: pip3 install '
+                         '"infinisdk>=%(min_sdk_version)s"')
+                       % {'min_sdk_version': MIN_SDK_VERSION})
             raise exception.VolumeDriverException(message=message)
         version = infinisdk.core.utils.environment.get_infinisdk_version()
-        if pkg_version.parse(version) < pkg_version.parse('258.0.2'):
-            message = (_('The installed version of the infinisdk Python '
-                         'library is out of date: %(version)s, please '
-                         'update it with: pip3 install -U infinisdk')
-                       % {'version': version})
+        if pkg_version.parse(version) < pkg_version.parse(MIN_SDK_VERSION):
+            message = (_('The installed infinisdk Python library version '
+                         '%(version)s is out of date, please update it with: '
+                         'pip3 install -U "infinisdk>=%(min_sdk_version)s"')
+                       % {'version': version,
+                          'min_sdk_version': MIN_SDK_VERSION})
             raise exception.VolumeDriverException(message=message)
         backend_name = self.configuration.safe_get('volume_backend_name')
         self.backend_name = backend_name or self.__class__.__name__
@@ -411,8 +415,8 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             message = (_('Storage pool %(pool_name)s not found in system '
                          '%(system_name)s with serial %(system_serial)s')
                        % {'pool_name': self.backend.pool_name,
-                          'system_name': self._system.get_name(),
-                          'system_serial': self._system.get_serial()})
+                          'system_name': self.backend.system.get_name(),
+                          'system_serial': self.backend.system.get_serial()})
             LOG.error(message)
             raise exception.VolumeDriverException(message=message)
         return pool
@@ -440,16 +444,16 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         name = self._make_host_name(port)
         host = system.hosts.safe_get(name=name)
         if host is None:
-            LOG.debug('Create new entry for host %s with ALUA optimized '
-                      '%s in system %s with serial %s',
+            LOG.debug('Create new entry for host %s with ALUA '
+                      'optimized %s in system %s with serial %s',
                       name, optimized, system.get_name(),
                       system.get_serial())
             host = system.hosts.create(name=name, optimized=optimized)
             host.add_port(port)
             self._set_host_metadata(host)
         else:
-            LOG.debug('Found entry for host %s with ALUA optimized '
-                      '%s in system %s with serial %s',
+            LOG.debug('Found existing entry for host %s with ALUA '
+                      'optimized %s in system %s with serial %s',
                       host.get_name(), host.is_optimized(),
                       system.get_name(), system.get_serial())
         return host
@@ -492,11 +496,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         }
 
     def _get_or_create_qos_policy(self, qos_specs):
-        name = qos_specs['id']
-        qos_policy = self.backend.system.qos_policies.safe_get(name=name)
+        specs_id = qos_specs['id']
+        qos_policy = self.backend.system.qos_policies.safe_get(name=specs_id)
         if qos_policy is None:
             qos_policy = self.backend.system.qos_policies.create(
-                name=name,
+                name=specs_id,
                 type="VOLUME",
                 max_ops=qos_specs[QOS_MAX_IOPS],
                 max_bps=qos_specs[QOS_MAX_BWS])
@@ -510,17 +514,29 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                 policy = self._get_or_create_qos_policy(qos_specs)
                 policy.assign_entity(infinidat_volume)
 
-    def _get_online_fc_ports(self):
-        nodes = self.backend.system.components.nodes.get_all()
+    def _get_online_fc_ports(self, system):
+        system_name = system.get_name()
+        system_serial = system.get_serial()
+        nodes = system.components.nodes.get_all()
         for node in nodes:
+            index = node.get_index()
             for port in node.get_fc_ports():
+                wwpn = port.get_wwpn()
+                port_state = port.get_state()
+                link_state = port.get_link_state()
                 if port.is_link_up():
-                    yield str(port.get_wwpn())
+                    LOG.debug('Use FC port %s on storage system '
+                              '%s with serial %s and node %s with '
+                              'port state %s and link state %s',
+                              wwpn, system_name, system_serial,
+                              index, port_state, link_state)
+                    yield str(wwpn)
                 else:
-                    LOG.error('Skip FC port %s with invalid %s '
-                              'port state and %s link state',
-                              port.get_wwpn(), port.get_state(),
-                              port.get_link_state())
+                    LOG.debug('Skip FC port %s on storage system '
+                              '%s with serial %s and node %s with '
+                              'port state %s and link state %s',
+                              wwpn, system_name, system_serial,
+                              index, port_state, link_state)
 
     def _initialize_connection_fc(self, infinidat_volume, connector,
                                   system, optimized=True):
@@ -531,7 +547,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                                                   infinidat_volume)
             lun = mapping.get_lun()
         # Create initiator-target mapping.
-        target_wwpns = list(self._get_online_fc_ports())
+        target_wwpns = list(self._get_online_fc_ports(system))
         target_wwpns, init_target_map = self._build_initiator_target_map(
             connector, target_wwpns)
         target_luns = [lun] * len(target_wwpns)
@@ -677,48 +693,96 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
     @infinisdk_to_cinder_exceptions
     def initialize_connection(self, volume, connector, **kwargs):
         """Map an InfiniBox volume to the host"""
-        infinidat_volume = self._get_infinidat_volume(volume)
-        info = self._initialize_connection(infinidat_volume, connector,
-                                           self.backend.system)
-        LOG.debug('Local system %s [serial %s] connection info: %s',
-                  self.backend.system.get_name(),
-                  self.backend.system.get_serial(),
-                  info)
-        group = volume.get('group')
-        if group and group.is_replicated:
+        local_volume = self._get_infinidat_volume(volume)
+        volume_name = local_volume.get_name()
+        local_system = self.backend.system
+        local_info = self._initialize_connection(local_volume,
+                                                 connector,
+                                                 local_system)
+        group = volume.group
+        if group and self._is_group_replicated(group):
             specs = self._get_group_specs(group)
-            backend = self._get_backend(group, specs)
-        elif volume.is_replicated():
+            backend = self._safe_get_backend(group, specs)
+        elif self._is_volume_replicated(volume):
             specs = self._get_volume_specs(volume)
-            backend = self._get_backend(volume, specs)
+            backend = self._safe_get_backend(volume, specs)
         else:
-            backend = None
-        if backend and backend.uniform_access:
-            remote_system = backend.system
-            name = infinidat_volume.get_name()
-            remote_volume = remote_system.volumes.safe_get(name=name)
-            if remote_volume:
-                optimized = backend.alua_optimized
-                remote_info = self._initialize_connection(remote_volume,
-                                                          connector,
-                                                          remote_system,
-                                                          optimized)
-                LOG.debug('Remote system %s [serial %s] connection info: %s',
-                          remote_system.get_name(),
-                          remote_system.get_serial(),
-                          remote_info)
-                if self.protocol == constants.FC:
-                    local_map = info['data']['initiator_target_map']
-                    remote_map = remote_info['data']['initiator_target_map']
-                    initiator_target_map = {**local_map, **remote_map}
-                    info['data']['initiator_target_map'] = initiator_target_map
-                    keys = ['target_wwn', 'target_luns']
-                    for key in keys:
-                        info['data'][key] += remote_info['data'][key]
-                else:
-                    keys = ['target_portals', 'target_iqns', 'target_luns']
-                    for key in keys:
-                        info['data'][key] += remote_info['data'][key]
+            LOG.debug('Connection info for volume %s: %s',
+                      volume_name, local_info)
+            return local_info
+        if not backend:
+            LOG.debug('Replication backend was not found for volume %s, '
+                      'using connection info from local storage system %s '
+                      'with serial %s: %s',
+                      volume_name,
+                      local_system.get_name(),
+                      local_system.get_serial(),
+                      local_info)
+            return local_info
+        if not backend.uniform_access:
+            LOG.debug('Uniform access is disabled for volume %s, '
+                      'using connection info from local storage system %s '
+                      'with serial %s: %s',
+                      volume_name,
+                      local_system.get_name(),
+                      local_system.get_serial(),
+                      local_info)
+            return local_info
+        remote_system = backend.system
+        remote_volume = remote_system.volumes.safe_get(name=volume_name)
+        if not remote_volume:
+            LOG.debug('Replicated volume %s was not found on remote '
+                      'storage system %s with serial %s, using connection '
+                      'info from local storage system %s with serial %s: %s',
+                      volume_name,
+                      remote_system.get_name(),
+                      remote_system.get_serial(),
+                      local_system.get_name(),
+                      local_system.get_serial(),
+                      local_info)
+            return local_info
+        optimized = backend.alua_optimized
+        remote_info = self._initialize_connection(remote_volume,
+                                                  connector,
+                                                  remote_system,
+                                                  optimized)
+        LOG.debug('Connection info for volume %s from local '
+                  'storage system %s with serial %s: %s',
+                  volume_name,
+                  local_system.get_name(),
+                  local_system.get_serial(),
+                  local_info)
+        LOG.debug('Connection info for volume %s from remote '
+                  'storage system %s with serial %s: %s',
+                  volume_name,
+                  remote_system.get_name(),
+                  remote_system.get_serial(),
+                  remote_info)
+        local_data = local_info['data']
+        remote_data = remote_info['data']
+        info = {
+            'data': {
+                'target_discovered': True
+            }
+        }
+        if self.protocol == constants.FC:
+            local_map = local_data['initiator_target_map']
+            remote_map = remote_data['initiator_target_map']
+            common_map = {}
+            initiators = set(local_map.keys()) | set(remote_map.keys())
+            for initiator in initiators:
+                targets = local_map[initiator] + remote_map[initiator]
+                common_map[initiator] = targets
+            info['data']['initiator_target_map'] = common_map
+            info['driver_volume_type'] = 'fibre_channel'
+            keys = ['target_wwn', 'target_luns']
+        else:
+            info['driver_volume_type'] = 'iscsi'
+            keys = ['target_portals', 'target_iqns', 'target_luns']
+        for key in keys:
+            info['data'][key] = local_data[key] + remote_data[key]
+        LOG.debug('Uniform access connection info for volume %s: %s',
+                  volume_name, info)
         return info
 
     @infinisdk_to_cinder_exceptions
@@ -753,7 +817,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                 if self.protocol == constants.FC and connector is not None:
                     # Create initiator-target mapping to delete host entry
                     # this is only relevant for regular (specific host) detach
-                    target_wwpns = list(self._get_online_fc_ports())
+                    target_wwpns = list(self._get_online_fc_ports(system))
                     target_wwpns, target_map = (
                         self._build_initiator_target_map(connector,
                                                          target_wwpns))
@@ -772,13 +836,13 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         infinidat_volume = self._get_infinidat_volume(volume)
         self._terminate_connection(infinidat_volume, connector,
                                    self.backend.system)
-        group = volume.get('group')
-        if group and group.is_replicated:
+        group = volume.group
+        if group and self._is_group_replicated(group):
             specs = self._get_group_specs(group)
-            backend = self._get_backend(group, specs)
-        elif volume.is_replicated():
+            backend = self._safe_get_backend(group, specs)
+        elif self._is_volume_replicated(volume):
             specs = self._get_volume_specs(volume)
-            backend = self._get_backend(volume, specs)
+            backend = self._safe_get_backend(volume, specs)
         else:
             backend = None
         if backend and backend.uniform_access:
@@ -819,8 +883,8 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                            self.backend.system.compat.has_qos())
             max_osr = self.configuration.max_over_subscription_ratio
             thin = self.configuration.san_thin_provision
-            backends = list(self.backends.keys())
-            backends.remove(DEFAULT_BACKEND_ID)
+            backends = [backend for backend in self.backends.keys()
+                        if backend != DEFAULT_BACKEND_ID]
             replication_enabled = len(backends) > 0
             replication_targets = list(backends)
             self._volume_stats = dict(volume_backend_name=self.backend_name,
@@ -853,10 +917,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         compression_enabled = self.configuration.infinidat_use_compression
         if compression_enabled is not None:
             create_kwargs["compression_enabled"] = compression_enabled
-        infinidat_volume = self.backend.system.volumes.create(**create_kwargs)
-        self._set_qos(volume, infinidat_volume)
-        self._set_cinder_object_metadata(infinidat_volume, volume)
-        return infinidat_volume
+        return self.backend.system.volumes.create(**create_kwargs)
 
     @infinisdk_to_cinder_exceptions
     def create_volume(self, volume):
@@ -872,7 +933,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             infinidat_volume = self._get_infinidat_volume(volume)
         except exception.VolumeNotFound:
             return
-        if volume.is_replicated():
+        if self._is_volume_replicated(volume):
             self._delete_volume_replica(volume)
         infinidat_volume.safe_delete()
 
@@ -880,17 +941,22 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
     def extend_volume(self, volume, new_size):
         """Extend the size of a volume."""
         infinidat_volume = self._get_infinidat_volume(volume)
-        replicas = infinidat_volume.get_replicas()
-        for replica in replicas:
-            LOG.debug('Suspend replica %s before extend volume %s',
-                      replica, volume.name_id)
-            replica.suspend()
+        if self._is_volume_replicated(volume):
+            replicas = infinidat_volume.get_replicas()
+            for replica in replicas:
+                LOG.debug('Suspend replica %s before extend volume %s',
+                          replica, volume.name_id)
+                replica.suspend()
         size_delta = new_size * capacity.GiB - infinidat_volume.get_size()
-        infinidat_volume.resize(size_delta)
-        for replica in replicas:
-            LOG.debug('Resume replica %s after extend volume %s',
-                      replica, volume.name_id)
-            replica.resume()
+        try:
+            infinidat_volume.resize(size_delta)
+        finally:
+            if self._is_volume_replicated(volume):
+                replicas = infinidat_volume.get_replicas()
+                for replica in replicas:
+                    LOG.debug('Resume replica %s after extend volume %s',
+                              replica, volume.name_id)
+                    replica.resume()
 
     @infinisdk_to_cinder_exceptions
     def create_snapshot(self, snapshot):
@@ -945,21 +1011,52 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                 yield attach_info
 
     def _create_promoted_clone(self, volume, infinidat_parent):
+        """Create a cloned volume using snapshot promote.
+
+        The clone is created by taking a writable snapshot of the source
+        volume and promoting it to a regular volume on the backend.
+
+        On InfiniBox, a promoted snapshot inherits the size of the source
+        volume. However, Cinder allows creating a clone with a larger size
+        than the source volume (for example when a user specifies a larger
+        size during volume create from source).
+
+        In this case the promoted backend volume will initially be smaller
+        than the requested Cinder volume size, so an additional extend
+        operation is required to match the requested size.
+
+        Workflow:
+            1. Create a writable snapshot of the source volume.
+            2. Promote the snapshot to a regular volume.
+            3. If the promoted volume size is smaller than the requested
+               Cinder volume size, extend the backend volume.
+            4. Apply QoS and Cinder metadata.
+            5. If the volume belongs to a consistency group snapshot type,
+               add the volume to the corresponding InfiniBox consistency group.
+
+        :param volume: Cinder volume object representing the new volume.
+        :param infinidat_parent: InfiniBox volume object representing the
+                                 clone source.
+        """
         name = self._make_volume_name(volume)
         LOG.debug('Creating cloned volume %s from %s',
                   name, infinidat_parent.get_name())
-        infinidat_volume = infinidat_parent.create_snapshot(name)
-#            name=name, write_protected=False)
+        infinidat_volume = infinidat_parent.create_snapshot(name=name)
         LOG.debug('Promote cloned volume %s', name)
-        infinidat_volume.promote_snapshot()
-        volume_size = infinidat_volume.get_size()
-        if volume_size < volume.size * capacity.GiB:
-            self.extend_volume(volume, volume.size)
-        self._set_qos(volume, infinidat_volume)
-        self._set_cinder_object_metadata(infinidat_volume, volume)
+        try:
+            infinidat_volume.promote_snapshot()
+        except Exception as error:
+            LOG.exception('Failed to create promoted clone %s: %s',
+                          name, error)
+            try:
+                infinidat_volume.delete()
+            except Exception as error:
+                LOG.exception('Failed to cleanup promoted clone %s: %s',
+                              name, error)
+            raise
 
     def _create_copy_from_snapshot(self, volume, snapshot):
-        """Create a generic clone from a snapshot.
+        """Create a generic clone from a snapshot:
 
         Old versions of InfiniBox do not support detached clones,
         so we use dd to copy data. This can be a slow operation:
@@ -1016,15 +1113,15 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         * unmap volume and temporary snapshot
         * delete temporary snapshot
         """
+        attributes = ('id', 'name', 'volume')
+        Snapshot = collections.namedtuple('Snapshot', attributes)
         snapshot_id = str(uuid.uuid4())
         snapshot_name = CONF.snapshot_name_template % snapshot_id
-        snapshot = objects.Snapshot(id=snapshot_id,
-                                    name=snapshot_name,
-                                    volume=src_vref,
-                                    volume_size=src_vref.size)
+        snapshot = Snapshot(id=snapshot_id, name=snapshot_name,
+                            volume=src_vref)
         try:
             self.create_snapshot(snapshot)
-            self._create_copy_from_snapshot(volume, snapshot)
+            self.create_volume_from_snapshot(volume, snapshot)
         finally:
             self.delete_snapshot(snapshot)
 
@@ -1081,10 +1178,17 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             raise NotImplementedError()
         name = self._make_cg_name(group)
         pool = self._get_infinidat_pool()
-        infinidat_cg = self.backend.system.cons_groups.create(name=name,
-                                                              pool=pool)
-        self._set_cinder_object_metadata(infinidat_cg, group)
-        return {'status': fields.GroupStatus.AVAILABLE}
+        infinidat_group = self.backend.system.cons_groups.create(name=name,
+                                                                 pool=pool)
+        self._set_cinder_object_metadata(infinidat_group, group)
+        if self._is_group_replicated(group):
+            replication_status = fields.ReplicationStatus.ENABLED
+        else:
+            replication_status = fields.ReplicationStatus.DISABLED
+        return {
+            'status': fields.GroupStatus.AVAILABLE,
+            'replication_status': replication_status
+        }
 
     @infinisdk_to_cinder_exceptions
     def delete_group(self, context, group, volumes):
@@ -1099,16 +1203,18 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         if not volume_utils.is_group_a_cg_snapshot_type(group):
             raise NotImplementedError()
         try:
-            infinidat_cg = self._get_infinidat_cg(group)
+            infinidat_group = self._get_infinidat_cg(group)
         except exception.GroupNotFound:
             pass
         else:
-            if group.is_replicated:
-                replicas = infinidat_cg.get_replicas()
+            if self._is_group_replicated(group):
+                replicas = infinidat_group.get_replicas()
                 for replica in replicas:
+                    replica.suspend()
                     remote_system = replica.get_remote_system(safe=True)
                     remote_group = replica.get_remote_entity(safe=True)
-                    LOG.debug('Delete replica %s', replica)
+                    LOG.debug('Delete replica %s for consistency group %s',
+                              replica, infinidat_group.get_name())
                     replica.delete(retain_staging_area=False)
                     if remote_system and remote_group:
                         LOG.debug('Delete consistency group %s on '
@@ -1117,132 +1223,156 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                                   remote_system.get_name(),
                                   remote_system.get_serial())
                         remote_group.delete(delete_members=True)
-            infinidat_cg.safe_delete()
+            infinidat_group.safe_delete()
         for volume in volumes:
             self.delete_volume(volume)
         return None, None
 
-    @coordination.synchronized('infinidat-{self.backend.san_ip}-lock')
-    def _update_group(self, group, add_volumes=None, remove_volumes=None):
-        if add_volumes is None:
-            add_volumes = []
-
-        if remove_volumes is None:
-            remove_volumes = []
-
-        add_volumes_update = []
-        remove_volumes_update = []
-
-        group_model_update = {'replication_status': group.replication_status}
-
+    def _add_group_members(self, group, volumes):
+        volumes_update = []
         infinidat_group = self._get_infinidat_cg(group)
         group_name = infinidat_group.get_name()
-
-        if group.is_replicated:
-            specs = self._get_group_specs(group)
-            backend = self._get_backend(group, specs)
-            remote_system = backend.system
-
-        if group.is_replicated and (add_volumes or remove_volumes):
-            replicas = infinidat_group.get_replicas()
-            for replica in replicas:
-                LOG.debug('Suspending replica %s before add %d and remove '
-                          '%d members to or from consistency group %s',
-                          replica, len(add_volumes), len(remove_volumes),
-                          group_name)
-                replica.suspend()
-
-        for volume in add_volumes:
+        replicas = infinidat_group.get_replicas()
+        for volume in volumes:
             infinidat_volume = self._get_infinidat_volume(volume)
             volume_name = infinidat_volume.get_name()
-            replicas = infinidat_group.get_replicas()
-            if group.is_replicated:
+            if self._is_group_replicated(group):
+                if self._is_volume_replicated(volume):
+                    self._delete_volume_replica(volume)
                 if replicas:
-                    LOG.debug('Adding volume %s to already replicated '
+                    LOG.debug('Add volume %s to already replicated '
                               'consistency group %s',
                               volume_name, group_name)
                     infinidat_group.add_member(infinidat_volume,
                                                remote_entity_name=volume_name)
                 else:
-                    LOG.debug('Adding volume %s to not yet replicated '
+                    LOG.debug('Add volume %s to not yet replicated '
                               'consistency group %s',
                               volume_name, group_name)
                     infinidat_group.add_member(infinidat_volume)
-                replication_status = fields.ReplicationStatus.ENABLED
-                volume_update = {
-                    'id': volume.id,
-                    'replication_status': replication_status
-                }
-                add_volumes_update.append(volume_update)
             else:
-                LOG.debug('Adding volume %s to local consistency group %s',
+                LOG.debug('Add volume %s to local consistency group %s',
                           volume_name, group_name)
                 infinidat_group.add_member(infinidat_volume)
+            volume_update = {
+                'id': volume.id,
+                'replication_status': group.replication_status
+            }
+            volumes_update.append(volume_update)
+        return volumes_update
 
-        if add_volumes and group.is_replicated:
-            replicas = infinidat_group.get_replicas()
-            if not replicas:
-                self._create_group_replica(group)
-
-        if remove_volumes and not add_volumes and group.is_replicated:
-            group_members_count = infinidat_group.get_members_count()
-            if group_members_count == len(remove_volumes):
-                replicas = infinidat_group.get_replicas()
-                for replica in replicas:
-                    remote_group = replica.get_remote_entity(safe=True)
-                    LOG.debug('Delete replica %s', replica)
-                    replica.delete(retain_staging_area=False)
-                    if remote_group:
-                        LOG.debug('Delete consistency group %s in system '
-                                  '%s with serial %s',
-                                  group_name, remote_system.get_name(),
-                                  remote_system.get_serial())
-                        remote_group.delete(delete_members=True)
-
-        for volume in remove_volumes:
+    def _remove_group_members(self, group, volumes):
+        volumes_update = []
+        infinidat_group = self._get_infinidat_cg(group)
+        group_name = infinidat_group.get_name()
+        replicas = infinidat_group.get_replicas()
+        for volume in volumes:
             infinidat_volume = self._get_infinidat_volume(volume)
             volume_name = infinidat_volume.get_name()
-            replicas = infinidat_group.get_replicas()
-            if group.is_replicated:
+            if self._is_group_replicated(group):
                 if replicas:
-                    LOG.debug('Removing volume %s from already replicated '
+                    LOG.debug('Remove volume %s from already replicated '
                               'consistency group %s',
                               volume_name, group_name)
                     infinidat_group.remove_member(infinidat_volume,
                                                   retain_staging_area=False)
-                    remote_volume = remote_system.volumes.safe_get(
-                        name=volume_name)
-                    if remote_volume:
-                        LOG.debug('Removing volume %s in remote system %s '
-                                  'with serial %s',
-                                  volume_name, remote_system.get_name(),
+                    for replica in replicas:
+                        remote_system = replica.get_remote_system(safe=True)
+                        if not remote_system:
+                            continue
+                        remote_volume = remote_system.volumes.safe_get(
+                            name=volume_name)
+                        if not remote_volume:
+                            continue
+                        LOG.debug('Delete replicated volume %s in '
+                                  'remote system %s with serial %s',
+                                  remote_volume.get_name(),
+                                  remote_system.get_name(),
                                   remote_system.get_serial())
-                        remote_volume.delete()
+                        remote_volume.safe_delete()
                 else:
-                    LOG.debug('Removing volume %s from not yet replicated '
+                    LOG.debug('Remove volume %s from not yet replicated '
                               'consistency group %s',
                               volume_name, group_name)
                     infinidat_group.remove_member(infinidat_volume)
-                replication_status = fields.ReplicationStatus.DISABLED
-                volume_update = {
-                    'id': volume.id,
-                    'replication_status': replication_status
-                }
-                add_volumes_update.append(volume_update)
             else:
-                LOG.debug('Removing volume %s from local consistency group %s',
+                LOG.debug('Remove volume %s from local consistency group %s',
                           volume_name, group_name)
                 infinidat_group.remove_member(infinidat_volume)
+            if self._is_volume_replicated(volume):
+                self._create_volume_replica(volume)
+                replication_status = fields.ReplicationStatus.ENABLED
+            else:
+                replication_status = fields.ReplicationStatus.DISABLED
+            volume_update = {
+                'id': volume.id,
+                'status': volume.status,
+                'replication_status': replication_status
+            }
+            volumes_update.append(volume_update)
+        return volumes_update
 
-        if group.is_replicated and (add_volumes or remove_volumes):
+    @coordination.synchronized('infinidat-{self.backend.san_ip}-lock')
+    def _update_group(self, group, add_volumes=None, remove_volumes=None):
+        if add_volumes is None:
+            add_volumes = []
+        if remove_volumes is None:
+            remove_volumes = []
+        add_volumes_update = []
+        remove_volumes_update = []
+        replication_status = group.replication_status
+        infinidat_group = self._get_infinidat_cg(group)
+        group_name = infinidat_group.get_name()
+        replicas = infinidat_group.get_replicas()
+        if self._is_group_replicated(group):
+            for replica in replicas:
+                LOG.debug('Suspend replica %s for consistency group %s',
+                          replica, group_name)
+                replica.suspend()
+        if add_volumes:
+            add_volumes_update = self._add_group_members(group, add_volumes)
+        elif remove_volumes and self._is_group_replicated(group):
+            remove_volumes_names = set()
+            for remove_volume in remove_volumes:
+                infinidat_volume = self._get_infinidat_volume(remove_volume)
+                remove_volume_name = infinidat_volume.get_name()
+                remove_volumes_names.add(remove_volume_name)
+            group_members_names = set()
+            group_members = infinidat_group.get_members()
+            for group_member in group_members:
+                group_member_name = group_member.get_name()
+                group_members_names.add(group_member_name)
+            if remove_volumes_names == group_members_names:
+                replication_status = fields.ReplicationStatus.DISABLED
+                for replica in replicas:
+                    remote_system = replica.get_remote_system(safe=True)
+                    remote_group = replica.get_remote_entity(safe=True)
+                    LOG.debug('Delete replica %s for consistency group %s',
+                              replica, group_name)
+                    replica.delete(retain_staging_area=False)
+                    if remote_system and remote_group:
+                        LOG.debug('Delete consistency group %s in '
+                                  'remote system %s with serial %s',
+                                  remote_group.get_name(),
+                                  remote_system.get_name(),
+                                  remote_system.get_serial())
+                        remote_group.delete(delete_members=True)
+        if remove_volumes:
+            remove_volumes_update = self._remove_group_members(group,
+                                                               remove_volumes)
+        if self._is_group_replicated(group):
             replicas = infinidat_group.get_replicas()
             for replica in replicas:
-                LOG.debug('Resuming replica %s after adding %d and removing '
-                          '%d members to or from consistency group %s',
-                          replica, len(add_volumes), len(remove_volumes),
-                          group_name)
+                LOG.debug('Resume replica %s for consistency group %s',
+                          replica, group_name)
                 replica.resume()
-
+            if add_volumes and not replicas:
+                replication_status = fields.ReplicationStatus.ENABLED
+                self._create_group_replica(group)
+        group_model_update = {
+            'status': group.status,
+            'replication_status': replication_status
+        }
         return group_model_update, add_volumes_update, remove_volumes_update
 
     @infinisdk_to_cinder_exceptions
@@ -1784,12 +1914,18 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         replicas = infinidat_volume.get_replicas()
         for replica in replicas:
             replica.suspend()
+            remote_system = replica.get_remote_system(safe=True)
             remote_volume = replica.get_remote_entity(safe=True)
-            LOG.debug('Delete replica %s for volume %s',
-                      replica, volume.id)
+            LOG.debug('Deleting replica %s for volume %s',
+                      replica, infinidat_volume.get_name())
             replica.delete(retain_staging_area=False)
-            if remote_volume:
-                remote_volume.delete()
+            if remote_system and remote_volume:
+                LOG.debug('Delete replicated volume %s in '
+                          'remote system %s with serial %s',
+                          remote_volume.get_name(),
+                          remote_system.get_name(),
+                          remote_system.get_serial())
+                remote_volume.safe_delete()
 
     def _create_volume_replica(self, volume):
         infinidat_volume = self._get_infinidat_volume(volume)
@@ -1806,7 +1942,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         return {'replication_status': fields.ReplicationStatus.ENABLED}
 
     def _create_group_replica(self, group):
-        specs = specs = self._get_group_specs(group)
+        specs = self._get_group_specs(group)
         infinidat_group = self._get_infinidat_cg(group)
         replication_specs = self._get_replication_specs(group, specs)
         remote_cg_name = infinidat_group.get_name()
@@ -1824,25 +1960,32 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         backend_id = self._get_backend_id(entity, specs)
         return self.backends[backend_id]
 
+    def _safe_get_backend(self, entity, specs):
+        try:
+            return self._get_backend(entity, specs)
+        except exception.InvalidReplicationTarget as error:
+            LOG.error(error)
+            return None
+
     def _get_backend_id(self, entity, specs, failover=False):
         entity_name = entity.id
         entity_type = entity.__class__.__name__
         backend_id = specs.get(SPEC_REPLICATION_BACKEND)
         if not backend_id:
-            message = (_('Replication backend id is not configured '
-                         'for %(entity_type)s %(entity_name)s')
-                       % {'entity_type': entity_type,
-                          'entity_name': entity_name})
-            raise exception.VolumeDriverException(message=message)
+            reason = (_('replication backend id is not configured '
+                        'for %(entity_type)s %(entity_name)s')
+                      % {'entity_type': entity_type,
+                         'entity_name': entity_name})
+            raise exception.InvalidReplicationTarget(reason=reason)
         if backend_id not in self.backends:
-            message = (_('Replication backend %(backend_id)s for '
-                         '%(entity_type)s %(entity_name)s is not configured '
-                         'for %(storage_backend)s storage backend')
-                       % {'backend_id': backend_id,
-                          'entity_type': entity_type,
-                          'entity_name': entity_name,
-                          'storage_backend': self.configuration.config_group})
-            raise exception.VolumeDriverException(message=message)
+            reason = (_('replication backend %(backend_id)s for '
+                        '%(entity_type)s %(entity_name)s is not configured '
+                        'for %(storage_backend)s storage backend')
+                      % {'backend_id': backend_id,
+                         'entity_type': entity_type,
+                         'entity_name': entity_name,
+                         'storage_backend': self.configuration.config_group})
+            raise exception.InvalidReplicationTarget(reason=reason)
         if (not failover and backend_id == self.active_backend_id and
                 self.active_backend_id != DEFAULT_BACKEND_ID):
             LOG.debug('Storage backend %s failed-over to replication '
@@ -1872,16 +2015,21 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
 
     def _update_volume(self, volume):
         update = None
-        group = volume.get('group')
+        infinidat_volume = self._get_infinidat_volume(volume)
+        if infinidat_volume.is_write_protected():
+            infinidat_volume.disable_write_protection()
+        volume_size = infinidat_volume.get_size()
+        if volume_size < volume.size * capacity.GiB:
+            self.extend_volume(volume, volume.size)
+        group = volume.group
         if group and volume_utils.is_group_a_cg_snapshot_type(group):
             _, updates, _ = self._update_group(group, add_volumes=[volume])
             if updates:
                 update = updates[0]
-        elif volume.is_replicated():
+        elif self._is_volume_replicated(volume):
             update = self._create_volume_replica(volume)
-        infinidat_volume = self._get_infinidat_volume(volume)
-        if infinidat_volume.is_write_protected():
-            infinidat_volume.disable_write_protection()
+        self._set_qos(volume, infinidat_volume)
+        self._set_cinder_object_metadata(infinidat_volume, volume)
         return update
 
     def _get_volume_specs(self, volume):
@@ -1891,6 +2039,10 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             specs = volume_types.get_volume_type_extra_specs(type_id)
         return specs
 
+    def _is_volume_replicated(self, volume):
+        specs = self._get_volume_specs(volume)
+        return volume_utils.is_replicated_spec(specs)
+
     def _get_group_specs(self, group):
         specs = {}
         type_id = group.group_type_id
@@ -1898,25 +2050,34 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             specs = group_types.get_group_type_specs(type_id)
         return specs
 
+    def _is_group_replicated(self, group):
+        specs = self._get_group_specs(group)
+        spec1 = specs.get('group_replication_enabled')
+        spec2 = specs.get('consistent_group_replication_enabled')
+        return (volume_utils.is_boolean_str(spec1) or
+                volume_utils.is_boolean_str(spec2))
+
     def enable_replication(self, context, group, volumes):
-        LOG.debug('Enabling replication for group %s and volumes %s',
+        LOG.debug('Enable replication for group %s and volumes %s',
                   group.id, [volume.id for volume in volumes])
         infinidat_group = self._get_infinidat_cg(group)
+        group_name = infinidat_group.get_name()
         replicas = infinidat_group.get_replicas()
         for replica in replicas:
-            LOG.debug('Enabling replica %s for group %s',
-                      replica, group.id)
+            LOG.debug('Enable replica %s for group %s',
+                      replica, group_name)
             replica.resume()
         return None, None
 
     def disable_replication(self, context, group, volumes):
-        LOG.debug('Disabling replication for group %s and volumes %s',
+        LOG.debug('Disable replication for group %s and volumes %s',
                   group.id, [volume.id for volume in volumes])
         infinidat_group = self._get_infinidat_cg(group)
+        group_name = infinidat_group.get_name()
         replicas = infinidat_group.get_replicas()
         for replica in replicas:
-            LOG.debug('Disabling replica %s for group %s',
-                      replica, group.id)
+            LOG.debug('Disable replica %s for group %s',
+                      replica, group_name)
             replica.suspend()
         return None, None
 
@@ -1998,7 +2159,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                           group.id, secondary_id)
                 if status not in [fields.GroupStatus.IN_USE]:
                     status = fields.GroupStatus.AVAILABLE
-                if group.is_replicated:
+                if self._is_group_replicated(group):
                     specs = self._get_group_specs(group)
                     backend_id = self._get_backend_id(group, specs,
                                                       failover=True)
@@ -2035,11 +2196,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
                           volume.id, secondary_id)
                 if status not in [fields.VolumeStatus.IN_USE]:
                     status = fields.VolumeStatus.AVAILABLE
-                group = volume.get('group')
-                if group and group.is_replicated:
+                group = volume.group
+                if group and self._is_group_replicated(group):
                     LOG.debug('Volume %s is a member of replicated group %s',
                               volume.id, group.id)
-                elif volume.is_replicated():
+                elif self._is_volume_replicated(volume):
                     specs = self._get_volume_specs(volume)
                     backend_id = self._get_backend_id(volume, specs,
                                                       failover=True)
